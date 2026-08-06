@@ -1,0 +1,23 @@
+{
+  "name": "genkit-channels-discord",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Discord (gateway) channel for genkit-channels, written in TypeScript: runs a Genkit agent as a Discord bot over reflection v2.",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "discord.js": "^14.16.0",
+    "genkit-channels": "^0.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.19",
+    "typescript": "^5.3.3"
+  }
+}

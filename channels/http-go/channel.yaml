@@ -1,0 +1,37 @@
+name: http-go
+description: >-
+  Expose a Genkit app's flows and agents over HTTP via reflection v2. Go
+  implementation: compiles to a small static binary with no third-party deps.
+version: 0.1.0
+# This channel is written in Go: it is compiled to a static binary at image
+# build time (or locally via `build`).
+language: go
+# `entry` points at the built binary (relative to the channel dir). It may not
+# exist on disk until built.
+entry: bin/http-go-channel
+# Build command run in the channel dir to produce the binary.
+build: go build -o bin/http-go-channel .
+
+# Env var names the channel itself needs (surfaced in .env.example). None of its
+# own; the user app's env is declared in the manifest.
+env: []
+
+# Service settings this channel recommends. HTTP endpoints are meant to be
+# reachable, so the channel recommends public access. This is surfaced as a
+# notice at deploy time and never auto-applied: the user must set
+# `service.access: public` in channels.yaml to actually open the endpoint. The
+# workload is request/response, so request-only CPU (the default) is fine.
+recommends:
+  service:
+    access: public
+
+# JSONata rules evaluated against the compose context (deployment, expose,
+# config, env, child). A falsy `validate` result fails the deploy; a truthy
+# `warn` result logs a warning.
+warn:
+  # Endpoints are publicly reachable unless auth is configured in `with`.
+  - expr: >-
+      $not($exists(config.auth))
+    message: >-
+      no auth configured (deployment.with.auth); the HTTP endpoints will be
+      publicly reachable

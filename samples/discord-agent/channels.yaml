@@ -1,0 +1,27 @@
+# Wires this Genkit app to the Discord channel. Install the channel first with:
+#
+#   genkit-channel add ../../channels discord
+#
+# then deploy it locally:
+#
+#   genkit-channel deploy discord-bot --local
+#
+deployments:
+  - name: discord-bot
+    channel: discord
+    runtime:
+      language: js
+      # How to build and run the app. The channel spawns this as a headless
+      # child and talks to it over reflection v2.
+      build: npm run build
+      command: node
+      args: [lib/index.js]
+    expose:
+      # The agent the Discord bot drives. With a single agent defined you can
+      # omit this and the channel will pick it automatically.
+      agent: weatherAgent
+    # Channel-specific options (all optional). See channels/discord/channel.yaml.
+    with:
+      # 'thread' (default) keeps a separate conversation per thread/DM;
+      # 'channel' shares one conversation per channel.
+      session: thread

@@ -1,0 +1,44 @@
+name: discord
+description: >-
+  Run a Genkit agent as a Discord bot over the gateway (WebSocket). The bot
+  holds an outbound connection to Discord, so there is no public HTTP endpoint.
+version: 0.1.0
+# This channel runs on Node, so its language is `node`. It is written in
+# TypeScript and declares a `build` (below) that compiles it to JavaScript.
+language: node
+# Node entry to run (relative to the channel dir): the compiled output. It does
+# not exist on disk until the build has run.
+entry: dist/index.js
+# Build command run in the channel dir to produce `entry`. When the channel is
+# installed with `genkit-channels add`, this runs after you confirm; it also runs
+# in the container image build. `npm install` (not `--omit=dev`) so the
+# TypeScript compiler in devDependencies is available.
+build: npm install && npm run build
+
+
+# Env var names the channel itself needs (surfaced in .env.example). The bot
+# token from the Discord developer portal is required.
+env: [DISCORD_TOKEN]
+
+# Service settings this channel recommends. A gateway bot keeps an outbound
+# WebSocket open, so it must stay warm and keep its CPU allocated even when no
+# HTTP request is in flight: `always-allocated` CPU plus a single warm instance.
+# It exposes no public endpoint, so access stays private (the default). These
+# are surfaced as notices at deploy time; the `minInstances`/`cpu` values apply
+# as defaults, and both emit a cost notice since a warm instance is billed
+# continuously.
+recommends:
+  service:
+    cpu: always-allocated
+    minInstances: 1
+
+# JSONata rules evaluated against the compose context (deployment, expose,
+# config, env, child). A falsy `validate` result fails the deploy; a truthy
+# `warn` result logs a warning.
+warn:
+  # A public endpoint does nothing for a gateway bot and only widens exposure.
+  - expr: >-
+      deployment.service.access = 'public'
+    message: >-
+      service.access is "public", but a Discord gateway bot has no HTTP
+      endpoint to reach; leave access private.
