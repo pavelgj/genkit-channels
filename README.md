@@ -1,7 +1,7 @@
 # genkit-channels (experimental)
 
-Expose a Genkit app's flows and agents over a transport (a "channel") without
-codegen. `genkit-channels` runs your app as a child process and talks to it over
+Expose a Genkit app's flows and agents over a transport (a "channel").
+`genkit-channels` runs your app as a child process and talks to it over
 the reflection v2 protocol (JSON-RPC 2.0 over WebSocket), discovering its actions
 at runtime and mapping them onto a transport such as plain HTTP, a Slack bot, or
 a Discord bot.
