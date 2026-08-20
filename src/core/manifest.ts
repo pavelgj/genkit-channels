@@ -28,12 +28,14 @@ import * as YAML from 'yaml';
 import { parseServiceSettings } from './service-settings';
 import { isKnownTarget, knownTargets } from './targets';
 import type {
+  AgentDirConfig,
   DeployConfig,
   DeploymentManifest,
   PackagingName,
   RuntimeConfig,
   RuntimeLanguage,
 } from './types';
+
 
 
 export const MANIFEST_FILENAME = 'channels.yaml';
@@ -106,8 +108,10 @@ function validateDeployment(
   }
 
   const runtime = validateRuntime(d.runtime, where);
+  const agents = validateAgents(d.agents, where);
 
   if (d.target !== undefined && !isKnownTarget(d.target)) {
+
     throw new Error(
       `${where}.target must be one of: ${knownTargets().join(', ')} ` +
         `(got "${d.target}").`
@@ -137,11 +141,13 @@ function validateDeployment(
     name: d.name,
     channel: d.channel,
     runtime,
+    agents,
     expose: {
       agent: expose.agent,
       agents: expose.agents,
       flows: expose.flows,
     },
+
     target: d.target,
     packaging: d.packaging,
     region: d.region,
@@ -155,9 +161,12 @@ function validateDeployment(
 
 
 
-function validateRuntime(r: any, where: string): RuntimeConfig {
-  if (!r || typeof r !== 'object') {
-    throw new Error(`${where}.runtime is required (e.g. { language: go }).`);
+function validateRuntime(r: any, where: string): RuntimeConfig | undefined {
+  // Runtime is optional: with no runtime the framework runs the built-in
+  // agent-dir runtime (see `agents`).
+  if (r === undefined || r === null) return undefined;
+  if (typeof r !== 'object') {
+    throw new Error(`${where}.runtime must be an object (e.g. { language: go }).`);
   }
   if (!r.language || !KNOWN_LANGUAGES.includes(r.language)) {
     throw new Error(
@@ -174,6 +183,27 @@ function validateRuntime(r: any, where: string): RuntimeConfig {
     cwd: r.cwd,
   };
 }
+
+/**
+ * Validates the optional `agents` block that configures the built-in agent-dir
+ * runtime. Returns undefined when absent.
+ */
+function validateAgents(a: any, where: string): AgentDirConfig | undefined {
+  if (a === undefined || a === null) return undefined;
+  if (typeof a !== 'object') {
+    throw new Error(
+      `${where}.agents must be an object (e.g. { dir: ./agents }).`
+    );
+  }
+  if (a.dir !== undefined && typeof a.dir !== 'string') {
+    throw new Error(`${where}.agents.dir must be a string.`);
+  }
+  if (a.model !== undefined && typeof a.model !== 'string') {
+    throw new Error(`${where}.agents.model must be a string.`);
+  }
+  return { dir: a.dir, model: a.model };
+}
+
 
 /** Resolves the flattened list of agent names to expose. */
 export function resolveAgents(d: DeploymentManifest): string[] {

@@ -41,6 +41,10 @@ import { loadChannel } from './channels/loader';
 import { validateChannelConfig } from './channels/validate';
 import { resolveAgents, resolveFlows } from './manifest';
 import { getRuntimeBuilder } from './runtimes';
+import {
+  resolveAgentDirRuntime,
+  synthesizeAgentDirApp,
+} from './runtimes/agent-dir';
 import type {
   ChannelRuntimeConfig,
   ComposeContext,
@@ -48,6 +52,7 @@ import type {
   DeploymentManifest,
 } from './types';
 import { logger } from '../util/logger';
+
 
 const IGNORED_DIRS = new Set([
   'node_modules',
@@ -72,11 +77,20 @@ export async function compose(
 ): Promise<ComposePlan> {
   const channel = loadChannel(projectDir, deployment.channel);
   const channelBuild = resolveChannelBuildPlan(channel);
-  const runtime = getRuntimeBuilder(deployment.runtime.language).resolve(
-    deployment.runtime
-  );
+
+  // Runtime is optional. With no `runtime`, the framework runs the built-in
+  // agent-dir runtime: a synthesized headless JS app that loads the project's
+  // `agents/` folder. It resolves to an ordinary JS runtime so all downstream
+  // packaging is unchanged.
+  const usingAgentDir = !deployment.runtime;
+  const runtime = usingAgentDir
+    ? resolveAgentDirRuntime()
+    : getRuntimeBuilder(deployment.runtime!.language).resolve(
+        deployment.runtime!
+      );
 
   const expose = {
+
     agents: resolveAgents(deployment),
     flows: resolveFlows(deployment),
   };
@@ -105,9 +119,24 @@ export async function compose(
   copyDir(channel.dir, channelDest, { keepBuildOutput: true });
 
 
-  // 2) Copy the user's project source.
+  // 2) Provide the "user" app. With a real runtime, copy the user's project
+  // source. With the built-in agent-dir runtime, synthesize a small headless
+  // app (index.mjs + package.json) plus a copy of the agents folder.
   const userDest = path.join(stagingDir, 'user');
-  copyDir(projectDir, userDest, { skipStagingRoot: stagingDir });
+  if (usingAgentDir) {
+    const { agentCount } = synthesizeAgentDirApp(
+      projectDir,
+      userDest,
+      deployment.agents
+    );
+    logger.info(
+      `Using built-in agent-dir runtime (${agentCount} agent(s) from ` +
+        `${deployment.agents?.dir ?? './agents'}).`
+    );
+  } else {
+    copyDir(projectDir, userDest, { skipStagingRoot: stagingDir });
+  }
+
 
   // 3) Write the default (managed-mode) channel.config.json. The channel
   // resolves child.cwd relative to this file, so point it at the copied user
@@ -128,8 +157,10 @@ export async function compose(
 
   logger.info(
     `Composed ${deployment.channel} (${channel.language}) channel + ` +
-      `${deployment.runtime.language} app at ${stagingDir}`
+      `${usingAgentDir ? 'agent-dir' : deployment.runtime!.language} app at ` +
+      `${stagingDir}`
   );
+
 
   function writeChannelConfig(config: ChannelRuntimeConfig): void {
     fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n');
@@ -137,8 +168,10 @@ export async function compose(
 
   return {
     stagingDir,
+    usingAgentDir,
     runtime,
     channel: {
+
       definition: channel,
       entryFromStaging: path.join('channel', channel.entry),
       build: channelBuild,

@@ -1,0 +1,28 @@
+# A custom runtime that still uses the agent folder.
+#
+# Here we bring our own tiny Genkit runtime so we can add a custom tool (and, if
+# we wanted, extra model providers or middleware). We still get the agent folder
+# and default middleware for free via `loadAgentDir`, which the runtime calls.
+#
+# The agent prompt references our custom tool by name (`getWeather`); because the
+# runtime and the dir agents share one registry, the tool resolves.
+#
+# Install the channel, install deps, then run locally:
+#
+#   genkit-channel add ../../channels http-ts
+#   npm install
+#   . ~/init-gemini.sh && genkit-channel deploy weather --local
+#
+deployments:
+  - name: weather
+    channel: http-ts
+    runtime:
+      language: js
+      # Our runtime is a single ESM file; no build step needed.
+      command: node
+      args: [index.mjs]
+    # The `agents` block still configures the folder the runtime loads.
+    agents:
+      dir: ./agents
+    expose:
+      agent: weatherer

@@ -21,8 +21,13 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./agent-dir": {
+      "types": "./dist/agent-dir/index.d.ts",
+      "default": "./dist/agent-dir/index.js"
     }
   },
+
   "files": [
     "dist/",
     "channels/"
@@ -34,7 +39,9 @@
     "smoke:attached": "node test/smoke-attached.mjs",
     "pretest:discord-bridge": "tsc channels/discord/src/bridge.ts --outDir channels/discord/dist --module nodenext --moduleResolution nodenext --target ES2021 --skipLibCheck",
     "test:discord-bridge": "npm run pretest:discord-bridge && node test/discord-bridge.mjs",
-    "test": "node test/smoke.mjs && node test/smoke-attached.mjs && node test/agent.mjs && npm run test:discord-bridge && node test/packaging.mjs && node test/service-settings.mjs"
+    "test": "node test/smoke.mjs && node test/smoke-attached.mjs && node test/agent.mjs && npm run test:discord-bridge && node test/packaging.mjs && node test/service-settings.mjs",
+    "test:agent-dir": "node test/agent-dir.mjs"
+
 
   },
 
@@ -42,15 +49,21 @@
     "node": ">=20"
   },
   "dependencies": {
-    "@genkit-ai/ai": "1.40.1",
+    "@genkit-ai/ai": "^1.41.0",
+    "@genkit-ai/anthropic": "^0.4.0",
+    "@genkit-ai/compat-oai": "^1.41.0",
+    "@genkit-ai/google-genai": "^1.41.0",
+    "@genkit-ai/middleware": "^0.9.0",
     "axios": "^1.7.7",
     "commander": "^11.1.0",
     "extract-zip": "^2.0.1",
-    "genkit": "^1.40.1",
+    "genkit": "^1.41.0",
+
     "jsonata": "^2.0.5",
     "ws": "^8.18.0",
     "yaml": "^2.8.0"
   },
+
   "devDependencies": {
     "@types/node": "^20.11.19",
     "@types/ws": "^8.5.10",

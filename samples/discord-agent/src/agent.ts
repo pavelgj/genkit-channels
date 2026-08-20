@@ -17,6 +17,7 @@
 import { FileSessionStore } from 'genkit/beta';
 import { z } from 'zod';
 import { ai } from './genkit.js';
+import { retry } from '@genkit-ai/middleware';
 
 // A trivial tool so the agent can do something beyond chatting. Replace the
 // body with a real lookup (an API call, a database query, etc.).
@@ -44,4 +45,5 @@ export const weatherAgent = ai.defineAgent({
     'conversational. Use the getWeather tool when asked about the weather.',
   tools: [getWeather],
   store: new FileSessionStore('./.snapshots'),
+  use: [retry()],
 });

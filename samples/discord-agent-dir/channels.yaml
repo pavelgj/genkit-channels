@@ -1,0 +1,31 @@
+# A Discord bot with no runtime code: just a folder of agent prompts.
+#
+# With no `runtime` block the framework runs the built-in agent-dir runtime,
+# which loads ./agents, installs the default middleware (filesystem, skills,
+# retry, ...), and registers each agent folder as an agent. The Discord channel
+# discovers the agent over reflection v2 and runs it as a gateway bot.
+#
+# Install the channel, then run locally (see README for prerequisites):
+#
+#   genkit-channel add ../../channels discord
+#   cp .env.example .env   # fill in DISCORD_TOKEN + GEMINI_API_KEY
+#   genkit-channel deploy discord-bot --local
+#
+deployments:
+  - name: discord-bot
+    channel: discord
+    # No runtime: agents are loaded from ./agents by the built-in runtime.
+    agents:
+      # dir defaults to ./agents; model defaults to googleai/gemini-flash-latest.
+      dir: ./agents
+      model: googleai/gemini-flash-latest
+    expose:
+      # The agent the bot drives. With a single agent you can omit this.
+      agent: concierge
+    # Channel-specific options (all optional). See channels/discord/channel.yaml.
+    with:
+      # 'thread' (default) keeps a separate conversation per thread/DM;
+      # 'channel' shares one conversation per channel.
+      session: thread
+    # Env vars forwarded to the running service (and the built-in runtime).
+    env: [DISCORD_TOKEN, GEMINI_API_KEY]

@@ -1,0 +1,15 @@
+---
+# No `model:` needed: the built-in runtime applies the default
+# (googleai/gemini-flash-latest, or the model set in channels.yaml).
+config:
+  temperature: 0.8
+use:
+  # The skills middleware is auto-wired to this agent's ./skills folder, so the
+  # model can discover and load the skills below via the use_skill tool. You can
+  # also list other default middleware here, e.g. retry or filesystem.
+  - skills
+---
+
+{{role "system"}}
+You are a friendly, concise assistant. Keep replies short and helpful.
+When a user's request matches one of your skills, load it first, then follow it.

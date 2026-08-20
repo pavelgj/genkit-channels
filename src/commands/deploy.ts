@@ -214,7 +214,7 @@ async function runLocal(
   projectRoot: string,
   plan: ComposePlan
 ): Promise<void> {
-  const { stagingDir, channel, runtime, expose, config } = plan;
+  const { stagingDir, channel, runtime, expose, config, usingAgentDir } = plan;
 
   // --local runs the channel on the host. Node channels run their source
   // directly; Go channels would need a built binary. Keep local iteration to
@@ -228,18 +228,31 @@ async function runLocal(
 
   ensureChannelDeps(path.join(stagingDir, 'channel'));
 
-  // Write a local config that runs the child from the real project dir so its
-  // node_modules / built output are available.
+  // The child's working dir. For a real runtime we run from the *original*
+  // project so its node_modules / build output are reused. For the built-in
+  // agent-dir runtime there is no user project to run: the app was synthesized
+  // into the staging `user/` dir, so run (and install deps) there.
+  let childCwd: string;
+  if (usingAgentDir) {
+    const appDir = path.join(stagingDir, 'user');
+    ensureAgentDirDeps(appDir);
+    childCwd = appDir;
+  } else {
+    childCwd = path.resolve(projectRoot, runtime.cwd);
+  }
+
+  // Write a local config that runs the child from the resolved cwd.
   const localConfig = {
     child: {
       command: runtime.command,
       args: runtime.args,
-      cwd: path.resolve(projectRoot, runtime.cwd),
+      cwd: childCwd,
     },
     expose,
     config,
     readyTimeoutMs: 30000,
   };
+
   const localConfigPath = path.join(stagingDir, 'channel.local.json');
   fs.writeFileSync(localConfigPath, JSON.stringify(localConfig, null, 2) + '\n');
 
@@ -267,8 +280,35 @@ async function runLocal(
 }
 
 
+/**
+ * Installs the synthesized agent-dir app's npm deps for a local run. The app was
+ * generated into the staging `user/` dir by compose; here we `npm install` so
+ * `node index.mjs` can resolve genkit + the middleware/model plugins. Skipped if
+ * node_modules already exists.
+ */
+function ensureAgentDirDeps(appDir: string) {
+  const pkgPath = path.join(appDir, 'package.json');
+  if (!fs.existsSync(pkgPath)) return;
+  if (fs.existsSync(path.join(appDir, 'node_modules'))) return;
+
+  // The generated app depends on `genkit-channels`; point it at this checkout
+  // until the library is published (a no-op once it is).
+  linkLocalLibrary(pkgPath);
+
+  logger.info(`Installing agent-dir runtime dependencies in ${appDir} ...`);
+  const res = spawnSync('npm', ['install', '--no-audit', '--no-fund'], {
+    cwd: appDir,
+    stdio: 'inherit',
+    shell: process.platform === 'win32',
+  });
+  if (res.status !== 0) {
+    throw new Error('failed to install agent-dir runtime dependencies.');
+  }
+}
+
 /** Installs the staged channel's npm deps if they are not present yet. */
 function ensureChannelDeps(channelDir: string) {
+
   const pkgPath = path.join(channelDir, 'package.json');
   const hasPkg = fs.existsSync(pkgPath);
   const hasModules = fs.existsSync(path.join(channelDir, 'node_modules'));

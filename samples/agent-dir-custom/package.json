@@ -1,0 +1,14 @@
+{
+  "name": "agent-dir-custom-sample",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "A custom agent-dir runtime that adds a tool, wired to a channel via genkit-channels.",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "genkit": "^1.41.0",
+    "genkit-channels": "^0.1.0"
+  }
+}

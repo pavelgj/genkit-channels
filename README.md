@@ -72,7 +72,68 @@ deployments:
     region: us-central1
 ```
 
+## Agents without a runtime (agent-dir)
+
+For common agent use cases you do not need to write or run any Genkit app at all.
+Drop a folder of agent prompts next to your `channels.yaml` and omit `runtime`:
+the framework runs a built-in agent-dir runtime that loads the folder, installs
+the default middleware (filesystem, skills, retry, artifacts, ...), and registers
+each agent folder as an agent.
+
+Folder convention:
+
+```
+agents/
+  myAgent/
+    agent.prompt          standard agent prompt (model, tools, use: middleware)
+    skills/
+      <skill>/SKILL.md    auto-wired into the skills middleware for this agent
+channels.yaml
+```
+
+The agent folder name is the agent name (addressable at `/agent/myAgent`).
+
+```yaml
+deployments:
+  - name: assistant
+    channel: http
+    # No runtime: the built-in agent-dir runtime loads ./agents.
+    agents:
+      dir: ./agents                         # default ./agents
+      model: googleai/gemini-flash-latest   # default model for agents
+    expose:
+      agent: myAgent
+```
+
+Models "just work" once an API key is set: Google AI (`GEMINI_API_KEY`), OpenAI
+(`OPENAI_API_KEY`), or Anthropic (`ANTHROPIC_API_KEY`). Only providers whose key
+is present are registered.
+
+### Custom tools, models, or middleware
+
+When you need more than prompts and the defaults, bring a tiny runtime and let
+`loadAgentDir` build the Genkit instance for you. It installs the defaults and
+loads the agent folder, then returns the instance so you can keep configuring it:
+
+```js
+import { z } from 'genkit';
+import { loadAgentDir } from 'genkit-channels/agent-dir';
+
+const ai = loadAgentDir({ dir: './agents' /*, plugins: [ myProvider() ] */ });
+
+// A custom tool an agent.prompt can reference by name in its `tools:` list.
+ai.defineTool({ name: 'getWeather', /* ... */ }, async (input) => { /* ... */ });
+```
+
+Because the dir agents and your custom tools/models/middleware share one Genkit
+registry, prompts resolve tools by name, and an agent you define yourself
+overrides a same-named dir agent.
+
+See `samples/agent-dir-basic/` (no runtime) and `samples/agent-dir-custom/`
+(runtime with a custom tool).
+
 ## Writing a channel
+
 
 A channel is a Node package with a `channel.yaml` and an entry module. It imports
 `startAppProcess` from `genkit-channels` and maps a transport onto the discovered
@@ -171,7 +232,11 @@ genkit-channels/
     http-go/                the Go HTTP channel (small static binary)
   samples/
     discord-agent/          a Genkit agent wired to the Discord channel
+    discord-agent-dir/      a runtime-less Discord bot (just a folder of prompts)
+    agent-dir-basic/        a runtime-less agent (just a folder of prompts)
+    agent-dir-custom/       an agent-dir runtime with a custom tool
   bench/                    overhead benchmark harness (real Genkit app)
+
   docs/                     DESIGN.md, BENCHMARKS.md
   test/                     smoke test + fake reflection v2 client
 ```

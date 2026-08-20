@@ -135,14 +135,38 @@ export interface RuntimeConfig {
   cwd?: string;
 }
 
+/**
+ * Configures the built-in agent-dir runtime. Used when a deployment declares no
+ * `runtime` of its own (or wants to tweak the defaults). The framework spawns a
+ * headless Genkit app that loads `dir` and installs the default middleware and
+ * model providers (see the agent-dir helper). Every field is optional.
+ */
+export interface AgentDirConfig {
+  /** Directory of agent folders, relative to the project. Default `./agents`. */
+  dir?: string;
+  /** Model applied to an agent whose prompt omits one. */
+  model?: string;
+}
+
 /** A single deployment entry from the manifest. */
 export interface DeploymentManifest {
   /** Unique deployment name; also the default platform service name. */
   name: string;
   /** Name of an installed channel. */
   channel: ChannelName;
-  /** How to build/run the user's app. */
-  runtime: RuntimeConfig;
+  /**
+   * How to build/run the user's app. Optional: when omitted, the framework runs
+   * the built-in agent-dir runtime, loading agents from `agents.dir` (default
+   * `./agents`). Provide a `runtime` to run your own Genkit app instead.
+   */
+  runtime?: RuntimeConfig;
+  /**
+   * Configuration for the built-in agent-dir runtime (directory, default model).
+   * Honored whether or not a `runtime` is set; with no `runtime` it also selects
+   * the built-in runtime.
+   */
+  agents?: AgentDirConfig;
+
   /** Which discovered actions to expose (default: all). */
   expose?: ExposeConfig;
   /** Where to run it. */
@@ -357,8 +381,15 @@ export interface ChannelPlan {
 export interface ComposePlan {
   /** Absolute path to the staging dir with `channel/`, `user/`, config. */
   stagingDir: string;
+  /**
+   * True when this deployment uses the built-in agent-dir runtime (no `runtime`
+   * in the manifest). The "user app" was synthesized into the staging `user/`
+   * dir, so a local run must launch from there rather than the project dir.
+   */
+  usingAgentDir: boolean;
   /** Resolved user runtime (child command + Dockerfile build stage). */
   runtime: ResolvedRuntime;
+
   /** Resolved channel (entry + channel image build plan). */
   channel: ChannelPlan;
   /** Resolved expose filter. */

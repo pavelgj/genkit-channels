@@ -1,0 +1,24 @@
+# A runtime-less agent: no code, just a folder of agent prompts.
+#
+# With no `runtime` block the framework runs the built-in agent-dir runtime,
+# which loads ./agents, installs the default middleware (filesystem, skills,
+# retry, ...), and registers each agent folder as an agent. Set an API key
+# (GEMINI_API_KEY) and it just works.
+#
+# Install the channel first, then run locally:
+#
+#   genkit-channel add ../../channels http
+#   . ~/init-gemini.sh && genkit-channel deploy assistant --local
+#
+deployments:
+  - name: assistant
+    channel: http
+
+    # No runtime: agents are loaded from ./agents by the built-in runtime.
+    agents:
+      # dir defaults to ./agents; model defaults to googleai/gemini-flash-latest.
+      dir: ./agents
+      model: googleai/gemini-flash-latest
+    expose:
+      # The single agent the folder defines. With one agent you can omit this.
+      agent: assistant

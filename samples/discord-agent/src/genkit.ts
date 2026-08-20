@@ -14,12 +14,13 @@
  * limitations under the License.
  */
 
-import { googleAI } from '@genkit-ai/google-genai';
-import { genkit } from 'genkit/beta';
+import { googleAI } from "@genkit-ai/google-genai";
+import { retry } from "@genkit-ai/middleware";
+import { genkit } from "genkit/beta";
 
 // A single shared Genkit instance. `genkit/beta` gives us the agent APIs
 // (defineAgent, chat, sessions) the Discord channel drives over reflection v2.
 export const ai = genkit({
-  plugins: [googleAI()],
-  model: googleAI.model('gemini-flash-latest'),
+  plugins: [googleAI(), retry.plugin()],
+  model: googleAI.model("gemini-flash-latest"),
 });
