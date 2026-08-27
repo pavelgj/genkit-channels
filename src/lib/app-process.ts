@@ -171,6 +171,24 @@ export function startAppProcess(
   return app;
 }
 
+/**
+ * Prefix applied to request ids that originate from the dev UI (see the proxy
+ * notes on {@link AppProcess}). Keeps the dev UI's id space from colliding with
+ * the channel's own request ids on the single runtime link, and lets responses
+ * / stream notifications route back to the right consumer.
+ */
+const UPSTREAM_ID_PREFIX = 'u:';
+
+/**
+ * Normalizes a reflection server URL to a `ws://` / `wss://` scheme. `genkit
+ * start` may hand us an `http(s)://` URL; the WebSocket client needs a ws scheme.
+ */
+function toWsUrl(url: string): string {
+  if (url.startsWith('http://')) return `ws://${url.slice('http://'.length)}`;
+  if (url.startsWith('https://')) return `wss://${url.slice('https://'.length)}`;
+  return url;
+}
+
 interface PendingRequest {
   resolve: (value: any) => void;
   reject: (reason: unknown) => void;
@@ -198,6 +216,29 @@ export class AppProcess {
   private registered = false;
   private started = false;
 
+  /**
+   * When we ourselves were launched under `genkit start`, the dev UI hands us
+   * *its* reflection v2 server URL in the environment. We keep it so we can act
+   * as a proxy: the runtime dials us (managed mode), and we in turn dial the dev
+   * UI, presenting the runtime's registration and shuttling requests/streams
+   * both ways so the dev UI sees and can drive the app. Undefined when not run
+   * under the dev UI (e.g. in production).
+   */
+  private readonly upstreamUrl?: string;
+  /** The link to the dev UI's reflection server (proxy mode only). */
+  private upstream: WebSocket | null = null;
+  /** Whether the runtime's `register` has been answered (once only). */
+  private registerAnswered = false;
+  /** Monotonic sequence for namespacing forwarded dev UI request ids. */
+  private upstreamSeq = 0;
+  /**
+   * Maps a forwarded (namespaced) request id sent to the runtime back to the
+   * dev UI's original request id, so responses and stream notifications route
+   * home with the id the dev UI expects (preserving its original type).
+   */
+  private readonly upstreamIds = new Map<string, string | number | null>();
+
+
   private requestId = 0;
   private readonly pending = new Map<string, PendingRequest>();
   private readonly streamCbs = new Map<string, (chunk: unknown) => void>();
@@ -220,6 +261,15 @@ export class AppProcess {
     this.childSpec = opts.child ?? this.config.child;
     // Seed the port up front so `wsUrl` is correct immediately in attached mode.
     this.port = opts.port ?? this.config.attach?.port ?? 0;
+
+    // If *we* were launched under `genkit start`, the dev UI passed us its own
+    // reflection server URL. In that case we proxy the runtime to the dev UI so
+    // it can inspect/drive the app (see the proxy fields above). We must not let
+    // this value leak into the child's env verbatim, or the child would dial the
+    // dev UI directly and bypass the channel; `spawnChild` overwrites it with
+    // our own WS URL.
+    this.upstreamUrl = process.env.GENKIT_REFLECTION_V2_SERVER || undefined;
+
 
     this.readyPromise = new Promise<void>((resolve, reject) => {
       this.readyResolve = resolve;
@@ -379,12 +429,16 @@ export class AppProcess {
         this.onRegister(msg);
         break;
       case 'streamChunk': {
-        const { requestId, chunk } = msg.params || {};
-        this.streamCbs.get(String(requestId))?.(chunk);
+        const { requestId } = msg.params || {};
+        // A stream chunk for a forwarded dev UI request belongs upstream, not to
+        // a local callback. Route it home and stop.
+        if (this.forwardNotificationUpstream(msg, requestId)) break;
+        this.streamCbs.get(String(requestId))?.(msg.params?.chunk);
         break;
       }
       case 'runActionState': {
         const { requestId, state } = msg.params || {};
+        if (this.forwardNotificationUpstream(msg, requestId)) break;
         if (state?.traceId)
           this.traceCbs.get(String(requestId))?.(state.traceId);
         break;
@@ -401,13 +455,27 @@ export class AppProcess {
     if (msg.id !== undefined && msg.id !== null) {
       this.send({ jsonrpc: '2.0', result: {}, id: msg.id });
     }
+    // If we are running under the dev UI, present this runtime to it now that it
+    // has registered with us. The dev UI then drives the app *through* us.
+    if (this.upstreamUrl) {
+      this.connectUpstream(msg.params);
+    }
     this.readyResolve();
   }
 
   private onResponse(msg: RpcMessage): void {
-    const pending = this.pending.get(String(msg.id));
+    // A response to a request we forwarded on the dev UI's behalf: route it back
+    // to the dev UI under its original id, not to a local pending entry.
+    const id = String(msg.id);
+    if (id.startsWith(UPSTREAM_ID_PREFIX)) {
+      const originalId = this.upstreamIds.get(id);
+      this.upstreamIds.delete(id);
+      this.sendUpstream({ ...msg, id: originalId ?? null });
+      return;
+    }
+    const pending = this.pending.get(id);
     if (!pending) return;
-    this.pending.delete(String(msg.id));
+    this.pending.delete(id);
     if (msg.error) {
       const err = new Error(msg.error.message || 'runtime error') as Error & {
         data?: unknown;
@@ -418,6 +486,113 @@ export class AppProcess {
       pending.resolve(msg.result);
     }
   }
+
+  // --- Dev UI proxy ---------------------------------------------------------
+  //
+  // When `genkit start` launches the channel it passes its own reflection v2
+  // server URL in the environment. The runtime, however, must dial *us* so the
+  // channel can drive it. To keep the dev UI working, we bridge the two: the
+  // runtime connects here (managed mode) and we relay its registration, action
+  // list, runs and streams to/from the dev UI. From the dev UI's perspective the
+  // channel process *is* the runtime.
+
+  /**
+   * Opens the link to the dev UI's reflection server and registers this runtime
+   * with it, forwarding the runtime's own `register` params (pid, name, version)
+   * so the dev UI shows the real app. Idempotent: only the first runtime
+   * registration dials out.
+   */
+  private connectUpstream(registerParams: unknown): void {
+    if (this.registerAnswered) return;
+    this.registerAnswered = true;
+
+    const url = toWsUrl(this.upstreamUrl!);
+    let socket: WebSocket;
+    try {
+      socket = new WebSocket(url);
+    } catch (e) {
+      console.error(
+        `[genkit-channels] failed to dial dev UI at ${url}: ` +
+          `${(e as Error).message}`
+      );
+      return;
+    }
+    this.upstream = socket;
+
+    socket.on('open', () => {
+      // Present the runtime to the dev UI. Its reply is a plain ack we ignore.
+      this.sendUpstream({
+        jsonrpc: '2.0',
+        method: 'register',
+        params: registerParams,
+        id: `${UPSTREAM_ID_PREFIX}register`,
+      });
+    });
+    socket.on('message', (data) => this.onUpstreamMessage(data));
+    socket.on('error', (err) =>
+      console.error('[genkit-channels] dev UI link error', err.message)
+    );
+    socket.on('close', () => {
+      if (this.upstream === socket) this.upstream = null;
+    });
+  }
+
+  /** Handles a message from the dev UI: forward its requests to the runtime. */
+  private onUpstreamMessage(data: unknown): void {
+    let msg: RpcMessage;
+    try {
+      msg = JSON.parse(String(data));
+    } catch (e) {
+      console.error('[genkit-channels] bad dev UI message', e);
+      return;
+    }
+    // The dev UI issues requests (listActions, runAction, cancelAction, ...).
+    // Anything without a method is a response to our own `register` and needs no
+    // handling.
+    if (!msg.method) return;
+
+    // Namespace the dev UI's id so its request space cannot collide with the
+    // channel's own requests on the shared runtime link, and remember the
+    // original so the response / stream notifications can route home.
+    const forwardedId = `${UPSTREAM_ID_PREFIX}${++this.upstreamSeq}`;
+    if (msg.id !== undefined) {
+      this.upstreamIds.set(forwardedId, msg.id ?? null);
+    }
+    this.send({
+      jsonrpc: '2.0',
+      method: msg.method,
+      params: msg.params,
+      id: msg.id === undefined ? undefined : forwardedId,
+    });
+  }
+
+  /**
+   * If `requestId` names a forwarded dev UI request, relays the notification to
+   * the dev UI under its original request id and returns true (handled).
+   * Otherwise returns false so the local stream/trace callbacks run.
+   */
+  private forwardNotificationUpstream(
+    msg: RpcMessage,
+    requestId: unknown
+  ): boolean {
+    const key = String(requestId);
+    if (!key.startsWith(UPSTREAM_ID_PREFIX)) return false;
+    const originalId = this.upstreamIds.get(key);
+    if (originalId === undefined) return false;
+    this.sendUpstream({
+      ...msg,
+      params: { ...msg.params, requestId: originalId },
+    });
+    return true;
+  }
+
+  /** Sends a message to the dev UI link, if connected. */
+  private sendUpstream(obj: RpcMessage): void {
+    if (this.upstream && this.upstream.readyState === this.upstream.OPEN) {
+      this.upstream.send(JSON.stringify(obj));
+    }
+  }
+
 
   private send(obj: RpcMessage): void {
     if (this.ws && this.ws.readyState === this.ws.OPEN) {
@@ -506,6 +681,11 @@ export class AppProcess {
   async stop(signal: NodeJS.Signals = 'SIGTERM'): Promise<void> {
     try {
       this.wss?.close();
+    } catch {
+      // ignore
+    }
+    try {
+      this.upstream?.close();
     } catch {
       // ignore
     }
