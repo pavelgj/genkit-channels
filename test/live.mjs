@@ -70,9 +70,14 @@ run('live', async () => {
 
   process.env.DISCORD_TOKEN = 'channel-secret';
   const channel = initChannel({ config });
-  const agent = channel.agent();
+  // One handle per conversation, the way the Discord channel does it.
+  const conversation = () => {
+    const sessionId = randomUUID();
+    const agent = channel.agent(undefined, { sessionId });
+    return { agent, chat: agent.chat({ sessionId }) };
+  };
 
-  const tokyo = agent.chat({ sessionId: randomUUID() });
+  const { agent, chat: tokyo } = conversation();
   const turn = tokyo.sendStream("What's the weather in Tokyo? One sentence.");
   let streamed = '';
   for await (const chunk of turn.stream) streamed += chunk.text;
@@ -81,7 +86,7 @@ run('live', async () => {
   check('turn streams text', streamed.length > 0);
   check('turn finishes', t1.finishReason === 'stop');
 
-  const paris = agent.chat({ sessionId: randomUUID() });
+  const { chat: paris } = conversation();
   const p1 = await paris.send('And the weather in Paris? One sentence.');
   console.log(`  paris: ${p1.text.trim()}`);
 

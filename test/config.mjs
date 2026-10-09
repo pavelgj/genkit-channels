@@ -23,6 +23,7 @@
 
 import { buildChannelConfig } from '../dist/core/channel-config.js';
 import { durationMs, parseChannelConfig } from '../dist/lib/config.js';
+import { inheritEnvFor } from '../dist/lib/runner.js';
 import { check, run } from './helpers.mjs';
 
 function parsing() {
@@ -105,7 +106,22 @@ function compile() {
   check('compiled config validates', !!parseChannelConfig(compiled));
 }
 
+function envPolicy() {
+  const env = { A: '1', B: '2', SECRET: 'x' };
+  check('no policy inherits everything', inheritEnvFor({}, env) === true);
+  check(
+    'denyEnv becomes an allowlist of the rest',
+    JSON.stringify(inheritEnvFor({ denyEnv: ['SECRET'] }, env)) === '["A","B"]'
+  );
+  check(
+    'env allowlist minus denied',
+    JSON.stringify(inheritEnvFor({ env: ['A', 'SECRET'], denyEnv: ['SECRET'] }, env)) ===
+      '["A"]'
+  );
+}
+
 run('config', async () => {
   parsing();
   compile();
+  envPolicy();
 });

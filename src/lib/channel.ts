@@ -33,10 +33,21 @@
  * may start a box just to answer.
  */
 
-import { Box, SINGLETON_KEY, box, type BoxRunner } from '@genkit-ai/box';
-import { genkit, type ActionMetadata, type Flow, type Genkit } from 'genkit';
+import {
+  Box,
+  SHARED_KEY,
+  SINGLETON_KEY,
+  box,
+  type BoxRunner,
+} from '@genkit-ai/box';
+import {
+  genkit,
+  type ActionContext,
+  type ActionMetadata,
+  type Flow,
+  type Genkit,
+} from 'genkit';
 import type { AgentAPI } from 'genkit/beta';
-import { randomUUID } from 'node:crypto';
 import {
   loadChannelConfigFile,
   parseChannelConfig,
@@ -66,6 +77,18 @@ export interface InitChannelOptions {
   devUi?: boolean;
 }
 
+/** Per-conversation options for {@link Channel.agent}. */
+export interface AgentHandleOptions {
+  /**
+   * The conversation this handle is for. With `route: session` every call
+   * through the handle (turns, snapshot reads, aborts) goes to this session's
+   * box. Pass the same id to `chat({ sessionId })` for server-managed agents.
+   */
+  sessionId?: string;
+  /** Extra action context, passed to the route and on to the agent. */
+  context?: ActionContext;
+}
+
 /** The channel's handle on the user's app. */
 export interface Channel<Options = Record<string, unknown>> {
   /** Which agents and flows the deployment exposes. */
@@ -78,8 +101,19 @@ export interface Channel<Options = Record<string, unknown>> {
   /**
    * A proxy for an agent in the app. No name picks the single exposed agent
    * (throws on zero or several). Sync: the box starts on the first call.
+   *
+   * Handles are cheap. With `route: session`, make one per conversation and
+   * pass its `sessionId`, so the whole conversation lands on one box:
+   *
+   * ```ts
+   * const agent = channel.agent('concierge', { sessionId });
+   * await agent.chat({ sessionId }).send('hi');
+   * ```
    */
-  agent<State = unknown>(name?: string): AgentAPI<State>;
+  agent<State = unknown>(
+    name?: string,
+    opts?: AgentHandleOptions
+  ): AgentAPI<State>;
   /**
    * Who owns an agent's session state, from the deployment config (default
    * `server`). Server-managed agents chat by `sessionId`; client-managed ones
@@ -89,9 +123,9 @@ export interface Channel<Options = Record<string, unknown>> {
   /** A proxy for a flow in the app. Sync: the box starts on the first call. */
   flow(name: string): Flow;
   /**
-   * Starts the app's box now instead of on the first call (`route: app` only;
-   * other routes have no box to warm ahead of a session). Resolves when the
-   * app is up.
+   * Starts the app's box now instead of on the first call. Resolves when the
+   * app is up. With `route: session` this warms the shared box (the one
+   * flows and session-less calls use).
    */
   warm(): Promise<void>;
   /**
@@ -130,10 +164,10 @@ class ChannelImpl<Options> implements Channel<Options> {
   readonly options: Options;
   readonly ai: Genkit;
   readonly box: Box;
+  /** Context-free agent handles, reused across calls. */
   private readonly agents = new Map<string, AgentAPI<unknown>>();
   private readonly flows = new Map<string, Flow>();
-  private readonly runner: BoxRunner;
-  private readonly singleton: boolean;
+  private readonly warmKey: string | undefined;
 
   constructor(
     private readonly config: ChannelConfig,
@@ -143,13 +177,16 @@ class ChannelImpl<Options> implements Channel<Options> {
     this.expose = config.expose;
     // `with` is free-form user YAML; the channel declares its expected shape.
     this.options = config.options as Options;
-    this.singleton = (config.box.route ?? 'app') === 'app';
+    // Which key warm() starts: the singleton box, or sessionRoute's shared box.
+    // A per-request route has nothing to warm (boxes die after each call).
+    const route = config.box.route ?? 'app';
+    this.warmKey =
+      route === 'app' ? SINGLETON_KEY : route === 'session' ? SHARED_KEY : undefined;
 
     const boxOptions = buildBoxOptions(
       config.box,
       opts.runner ?? buildRunner(config.box.runner, config.box, baseDir)
     );
-    this.runner = boxOptions.runner;
 
     // The channel's Genkit instance only hosts proxies; it needs no plugins.
     this.ai = genkit({});
@@ -167,14 +204,22 @@ class ChannelImpl<Options> implements Channel<Options> {
     }
   }
 
-  agent<State = unknown>(name?: string): AgentAPI<State> {
+  agent<State = unknown>(
+    name?: string,
+    opts?: AgentHandleOptions
+  ): AgentAPI<State> {
     const resolved = name ?? this.soleAgent();
+    const context = opts?.sessionId
+      ? { ...opts.context, sessionId: opts.sessionId }
+      : opts?.context;
+    // Box proxies are untyped on the wire; the caller declares the agent's
+    // custom state type.
+    if (context) return this.box.agent<State>({ name: resolved, context });
     let proxy = this.agents.get(resolved);
     if (!proxy) {
       proxy = this.box.agent<unknown>({ name: resolved });
       this.agents.set(resolved, proxy);
     }
-    // The wire is untyped; the caller declares the agent's custom state type.
     return proxy as AgentAPI<State>;
   }
 
@@ -192,25 +237,13 @@ class ChannelImpl<Options> implements Channel<Options> {
   }
 
   async warm(): Promise<void> {
-    if (!this.singleton) return;
-    // TODO(box): FR-4. Use box.warm() instead of reaching into the runner.
-    await this.runner.acquire(SINGLETON_KEY);
+    if (this.warmKey) await this.box.warm(this.warmKey);
   }
 
-  async listActions(): Promise<Record<string, ActionMetadata>> {
-    // TODO(box): FR-5. Use a public box.listActions().
-    if (this.singleton) {
-      const conn = await this.runner.acquire(SINGLETON_KEY);
-      return conn.listActions();
-    }
-    // Non-singleton routes: a throwaway box, released right after.
-    const key = `list-actions-${randomUUID()}`;
-    try {
-      const conn = await this.runner.acquire(key);
-      return await conn.listActions();
-    } finally {
-      await this.runner.release(key);
-    }
+  listActions(): Promise<Record<string, ActionMetadata>> {
+    // The shared/singleton box when there is one; otherwise a throwaway box
+    // the box reclaims per retention.
+    return this.box.listActions(this.warmKey ?? `list-actions`);
   }
 
   close(): Promise<void> {

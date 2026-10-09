@@ -16,9 +16,10 @@
 
 /**
  * The `box` block end to end, against the fake runtime:
- *  - route: session gives each agent session its own box, and snapshot-only
- *    calls (resume, getSnapshot) find their way back (FR-3 shim),
- *  - box.env / denyEnv control what the box inherits (FR-1 shim).
+ *  - route: session (box's sessionRoute) gives each conversation its own box
+ *    when the channel passes a per-conversation handle
+ *    (`channel.agent(name, { sessionId })`),
+ *  - box.env / denyEnv control what the box inherits (box `inheritEnv`).
  * Run after `pnpm build`:
  *
  *   node test/box-routing.mjs
@@ -35,19 +36,22 @@ async function sessionRouting() {
       box: { runner: { type: 'exec', cmd: fakeRuntimeCmd }, route: 'session' },
     },
   });
-  const agent = channel.agent();
 
-  // Two sessions, two turns each. Second turns resume by snapshotId only, so
-  // they must route via the snapshot -> box mapping.
-  const a = agent.chat({ sessionId: 'session-a' });
-  const b = agent.chat({ sessionId: 'session-b' });
-  await a.send('a1');
-  await b.send('b1');
-  await a.send('a2');
-  await b.send('b2');
+  // One handle per conversation, carrying its session id: every call through
+  // it (later turns resume by snapshotId only) goes to the same box.
+  const conversation = (sessionId) => {
+    const agent = channel.agent('echoAgent', { sessionId });
+    return { agent, chat: agent.chat({ sessionId }) };
+  };
+  const a = conversation('session-a');
+  const b = conversation('session-b');
+  await a.chat.send('a1');
+  await b.chat.send('b1');
+  await a.chat.send('a2');
+  await b.chat.send('b2');
 
-  const snapA = await agent.getSnapshot({ sessionId: 'session-a' });
-  const snapB = await agent.getSnapshot({ sessionId: 'session-b' });
+  const snapA = await a.agent.getSnapshot({ sessionId: 'session-a' });
+  const snapB = await b.agent.getSnapshot({ sessionId: 'session-b' });
   check('session a kept its history across turns', snapA?.state?.messages?.length === 4);
   check('session b kept its history across turns', snapB?.state?.messages?.length === 4);
   check(
@@ -55,17 +59,10 @@ async function sessionRouting() {
     !!snapA?.pid && !!snapB?.pid && snapA.pid !== snapB.pid
   );
 
-  const bySnapshot = await agent.getSnapshot(a.snapshotId);
-  check('snapshot-only lookup routes to its session', bySnapshot?.pid === snapA?.pid);
+  const bySnapshot = await a.agent.getSnapshot(a.chat.snapshotId);
+  check('snapshot-only lookup on the handle routes to its session', bySnapshot?.pid === snapA?.pid);
 
-  // No session id up front: the box mints one and later calls route back.
-  const fresh = agent.chat();
-  await fresh.send('hi');
-  await fresh.send('again');
-  const snapFresh = await agent.getSnapshot({ sessionId: fresh.sessionId });
-  check('agent-minted session keeps routing to its box', snapFresh?.state?.messages?.length === 4);
-
-  // Flows have no session: they share one box instead of one per call.
+  // Flows have no session: they share one box.
   const probe = channel.flow('probe');
   const p1 = await probe.run({});
   const p2 = await probe.run({});
@@ -74,6 +71,18 @@ async function sessionRouting() {
     'session route: the flow box is not a session box',
     p1.result.pid !== snapA?.pid && p1.result.pid !== snapB?.pid
   );
+
+  // warm() starts the shared box (the one flows use), not a new one.
+  await channel.warm();
+  const p3 = await probe.run({});
+  check('warm() targets the shared box', p3.result.pid === p1.result.pid);
+
+  // Without a per-conversation handle, routing only sees the payload: a
+  // snapshot-only call lands on the shared box, which doesn't know it. That is
+  // why channels pass sessionId to channel.agent().
+  const bare = channel.agent('echoAgent');
+  const missed = await bare.getSnapshot(a.chat.snapshotId);
+  check('bare handle: snapshot-only call goes to the shared box', missed === undefined);
 
   await channel.close();
 }

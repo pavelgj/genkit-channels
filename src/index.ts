@@ -25,6 +25,7 @@
 
 export {
   initChannel,
+  type AgentHandleOptions,
   type Channel,
   type InitChannelOptions,
 } from './lib/channel';

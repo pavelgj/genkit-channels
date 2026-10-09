@@ -46,7 +46,7 @@
   "dependencies": {
     "@genkit-ai/ai": "^1.43.0-rc.1",
     "@genkit-ai/anthropic": "^0.6.0-rc.1",
-    "@genkit-ai/box": "0.0.1-dev.1",
+    "@genkit-ai/box": "0.0.1-dev.2",
     "@genkit-ai/compat-oai": "^1.43.0-rc.1",
     "@genkit-ai/google-genai": "^1.43.0-rc.1",
     "@genkit-ai/middleware": "^0.11.0-rc.1",

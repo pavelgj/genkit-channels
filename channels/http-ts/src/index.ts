@@ -43,6 +43,7 @@ import {
   type Channel,
   type SessionState,
 } from 'genkit-channels';
+import { randomUUID } from 'node:crypto';
 
 interface Route {
   kind: 'flow' | 'agent';
@@ -149,8 +150,9 @@ interface AgentRequestBody {
 
 /**
  * One agent turn. Server-managed agents continue a conversation by
- * `sessionId` (minted on the first turn and returned); client-managed agents
- * expect the caller to send back the `state` from the previous response.
+ * `sessionId` (generated on the first turn and returned); client-managed
+ * agents expect the caller to send back the `state` from the previous
+ * response.
  */
 async function handleAgent(
   channel: Channel,
@@ -167,17 +169,20 @@ async function handleAgent(
       .json({ error: { message: '`message` (string) is required' } });
     return;
   }
-  const agent = channel.agent(name);
-  let chat: AgentChat;
-  if (channel.agentState(name) === 'client') {
-    // The state blob is opaque to the channel; the agent validates it.
-    const state = isObject(body.state) ? (body.state as SessionState) : undefined;
-    chat = agent.chat(state ? { state } : undefined);
-  } else {
-    const sessionId =
-      typeof body.sessionId === 'string' ? body.sessionId : undefined;
-    chat = agent.chat(sessionId ? { sessionId } : undefined);
-  }
+  // The state blob is opaque to the channel; the agent validates it.
+  const state = isObject(body.state) ? (body.state as SessionState) : undefined;
+  // Pick the session id up front (rather than letting the agent mint one) so
+  // even the first turn routes to the conversation's box under
+  // `box.route: session`. Callers send it back to continue.
+  const sessionId =
+    typeof body.sessionId === 'string'
+      ? body.sessionId
+      : (state?.sessionId ?? randomUUID());
+  const agent = channel.agent(name, { sessionId });
+  const chat: AgentChat =
+    channel.agentState(name) === 'client'
+      ? agent.chat(state ? { state } : undefined)
+      : agent.chat({ sessionId });
 
   const turn = chat.sendStream(body.message, { abortSignal });
   if (stream) {
@@ -190,7 +195,7 @@ async function handleAgent(
   const result = {
     text: response.text,
     finishReason: response.finishReason,
-    sessionId: response.sessionId,
+    sessionId: response.sessionId ?? sessionId,
     snapshotId: response.snapshotId,
     state: response.raw.state,
   };

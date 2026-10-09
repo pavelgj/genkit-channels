@@ -48,8 +48,8 @@ inline.
 - [ ] **Channel runtime robustness.** Box now restarts a dead app on the next
   call (the in-flight call fails). Still missing: box lifecycle hooks for
   health/logs (box FR-7), graceful drain.
-- [ ] **Delete box shims as features land.** See `scratch/box-frs.md` and
-  `TODO(box)` in `src/lib/`.
+- [ ] **Remaining box asks** (lifecycle hooks, host-side store, output
+  capture, Dev UI): see `scratch/box-frs.md`.
 - [ ] **`genkit-channel check <deployment>`**: boot the app once and verify
   `expose` names (and `agentState`) against `listActions`. Typos currently
   surface on the first call.

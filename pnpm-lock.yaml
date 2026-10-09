@@ -15,8 +15,8 @@ importers:
         specifier: ^0.6.0-rc.1
         version: 0.6.0-rc.1(genkit@1.43.0-rc.1(@google-cloud/firestore@8.7.1)(firebase-admin@14.2.0))(zod@3.25.76)
       '@genkit-ai/box':
-        specifier: 0.0.1-dev.1
-        version: 0.0.1-dev.1(genkit@1.43.0-rc.1(@google-cloud/firestore@8.7.1)(firebase-admin@14.2.0))
+        specifier: 0.0.1-dev.2
+        version: 0.0.1-dev.2(genkit@1.43.0-rc.1(@google-cloud/firestore@8.7.1)(firebase-admin@14.2.0))
       '@genkit-ai/compat-oai':
         specifier: ^1.43.0-rc.1
         version: 1.43.0-rc.1(genkit@1.43.0-rc.1(@google-cloud/firestore@8.7.1)(firebase-admin@14.2.0))(ws@8.21.2)(zod@3.25.76)
@@ -134,8 +134,8 @@ packages:
     peerDependencies:
       genkit: ^1.43.0-rc.1
 
-  '@genkit-ai/box@0.0.1-dev.1':
-    resolution: {integrity: sha512-f8DiHOZ+D5jFT+/w6ct2oACJ+9h0X5jn5D0mTFrypSzpRtdMUG2j5ut9+eb9ddTclMaHiqW/LF15nzaVD4L1QA==}
+  '@genkit-ai/box@0.0.1-dev.2':
+    resolution: {integrity: sha512-+UfYEo4Kk1codsG8F6RfpSpBN6tszHEXFYxb4T/+wqXifpZbFWdwQ//31OG9etJLsyK1KhYcPgUvwYU19UYhqQ==}
     peerDependencies:
       genkit: ^1.43.0-rc.1
 
@@ -2145,7 +2145,7 @@ snapshots:
     transitivePeerDependencies:
       - zod
 
-  '@genkit-ai/box@0.0.1-dev.1(genkit@1.43.0-rc.1(@google-cloud/firestore@8.7.1)(firebase-admin@14.2.0))':
+  '@genkit-ai/box@0.0.1-dev.2(genkit@1.43.0-rc.1(@google-cloud/firestore@8.7.1)(firebase-admin@14.2.0))':
     dependencies:
       genkit: 1.43.0-rc.1(@google-cloud/firestore@8.7.1)(firebase-admin@14.2.0)
       ws: 8.21.2

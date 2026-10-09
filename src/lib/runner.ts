@@ -26,21 +26,22 @@ import {
   localSandbox,
   perRequest,
   podmanRunner,
+  remoteRunner,
   sandboxExec,
+  sessionRoute,
   singleton,
   type BoxOptions,
   type BoxRunner,
+  type InheritEnv,
   type SandboxProvider,
 } from '@genkit-ai/box';
 import path from 'node:path';
 import {
   durationMs,
   type BoxConfig,
+  type Duration,
   type RunnerConfig,
 } from './config';
-import { withEnvPolicy, type EnvPolicy } from './shims/env-filter';
-import { RemoteRunner } from './shims/remote-runner';
-import { SessionRouting } from './shims/session-routing';
 
 /** Default env var the remote runner reads its reflection secret from. */
 export const REFLECTION_SECRET_ENV = 'GENKIT_REFLECTION_SECRET_TOKEN';
@@ -61,6 +62,26 @@ function isolation(name: string | undefined): SandboxProvider {
   }
 }
 
+/**
+ * Which inherited env vars the box gets, from `box.env` (allowlist) and
+ * `box.denyEnv`. Box takes an allowlist only, so "everything except the denied
+ * vars" becomes an allowlist of the current env minus those. Box always keeps
+ * its BASE_ENV basics (PATH, HOME, locale, ...), even if denied.
+ */
+export function inheritEnvFor(
+  box: BoxConfig,
+  env: NodeJS.ProcessEnv = process.env
+): InheritEnv {
+  const deny = new Set(box.denyEnv ?? []);
+  if (box.env) return box.env.filter((name) => !deny.has(name));
+  if (deny.size === 0) return true;
+  return Object.keys(env).filter((name) => !deny.has(name));
+}
+
+function ms(d: Duration | undefined): number | undefined {
+  return d === undefined ? undefined : durationMs(d);
+}
+
 /** Builds the runner described by `config`, resolving paths from `baseDir`. */
 export function buildRunner(
   config: RunnerConfig | undefined,
@@ -70,7 +91,6 @@ export function buildRunner(
   const runner = config ?? { type: 'exec' as const };
   const resolve = (p: string | undefined) =>
     p === undefined ? undefined : path.resolve(baseDir, p);
-  const policy: EnvPolicy = { allow: box.env, deny: box.denyEnv };
 
   switch (runner.type) {
     case 'exec': {
@@ -83,12 +103,14 @@ export function buildRunner(
       return execRunner({
         cmd: runner.cmd,
         cwd: resolve(runner.cwd),
-        isolate: withEnvPolicy(isolation(runner.isolate), policy),
+        isolate: isolation(runner.isolate),
+        inheritEnv: inheritEnvFor(box),
+        readyTimeoutMs: ms(runner.readyTimeout),
       });
     }
     case 'podman': {
-      // Containers inherit nothing, so the env allowlist is passed explicitly
-      // (values from this process). denyEnv still wins.
+      // Containers inherit nothing, so the allowlist is passed explicitly with
+      // values from this process. denyEnv still wins.
       const deny = new Set(box.denyEnv ?? []);
       const env: Record<string, string> = {};
       for (const name of box.env ?? []) {
@@ -103,40 +125,28 @@ export function buildRunner(
         network: runner.network,
         modulesVolume: runner.modulesVolume,
         extraArgs: runner.extraArgs,
+        readyTimeoutMs: ms(runner.readyTimeout),
         env,
       });
     }
     case 'remote':
-      return new RemoteRunner({
+      return remoteRunner({
         url: runner.url,
         secret: process.env[runner.secretEnv ?? REFLECTION_SECRET_ENV],
-        readyTimeoutMs:
-          runner.readyTimeout === undefined
-            ? undefined
-            : durationMs(runner.readyTimeout),
+        readyTimeoutMs: ms(runner.readyTimeout),
       });
   }
 }
 
-/**
- * Resolves the route and retention for `box.route` / `box.idle`. Session
- * routing wraps the runner (see {@link SessionRouting}), so this also returns
- * the runner to use.
- */
+/** Resolves the route and retention for `box.route` / `box.idle`. */
 export function buildBoxOptions(
   box: BoxConfig,
   runner: BoxRunner
 ): BoxOptions {
   const retention =
     box.idle === undefined ? undefined : { idle: durationMs(box.idle) };
-  switch (box.route ?? 'app') {
-    case 'app':
-      return { runner, route: singleton, retention };
-    case 'request':
-      return { runner, route: perRequest, retention };
-    case 'session': {
-      const routing = new SessionRouting();
-      return { runner: routing.wrap(runner), route: routing.route, retention };
-    }
-  }
+  const route = { app: singleton, request: perRequest, session: sessionRoute }[
+    box.route ?? 'app'
+  ];
+  return { runner, route, retention };
 }

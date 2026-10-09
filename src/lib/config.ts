@@ -53,6 +53,8 @@ export const ExecRunnerConfigSchema = z
     /** Working dir, relative to the config file. */
     cwd: z.string().optional(),
     isolate: z.enum(['none', 'local', 'bubblewrap', 'sandbox-exec']).optional(),
+    /** How long a new box has to start and connect (default 30s). */
+    readyTimeout: DurationSchema.optional(),
   })
   .strict();
 
@@ -68,6 +70,8 @@ export const PodmanRunnerConfigSchema = z
     network: z.enum(['internal', 'bridge']).optional(),
     modulesVolume: z.string().optional(),
     extraArgs: z.array(z.string()).optional(),
+    /** How long a new container has to answer its health check (default 30s). */
+    readyTimeout: DurationSchema.optional(),
   })
   .strict();
 
@@ -107,7 +111,10 @@ export const BoxConfigSchema = z
     env: z.array(z.string()).optional(),
     /** Env vars the box never receives. The CLI adds the channel's own `env`. */
     denyEnv: z.array(z.string()).optional(),
-    /** `app` route only: start the box at channel startup, not on first call. */
+    /**
+     * Start the app at channel startup rather than on the first call (the
+     * shared box under `route: session`; ignored for `route: request`).
+     */
     warm: z.boolean().optional(),
   })
   .strict();

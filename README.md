@@ -101,7 +101,7 @@ onto `@genkit-ai/box`, and the channel code doesn't change:
       route: session          # app (default, one box) | session | request
       idle: 10m               # reclaim idle boxes (session default 5m)
       env: [GEMINI_API_KEY]   # the only env vars the app receives
-      warm: true              # app route: start the box at channel startup
+      warm: true              # start the app (or the shared box) at startup
 ```
 
 - **exec** runs `runtime.command` as a local subprocess (the default).
@@ -111,14 +111,15 @@ onto `@genkit-ai/box`, and the channel code doesn't change:
   egress blocked by default.
 - **remote** calls a runtime someone else started (`url`), e.g. the Cloud Run
   sidecar. The secret comes from `GENKIT_REFLECTION_SECRET_TOKEN`.
-- **route: session** gives each agent conversation its own box. Flows share one
-  box. Pair it with a persistent session store if conversations must outlive
-  `idle`.
+- **route: session** gives each agent conversation its own box, as long as the
+  channel opens one handle per conversation (`channel.agent(name, { sessionId
+  })`; the bundled channels do). Flows share one box. Pair it with a persistent
+  session store if conversations must outlive `idle`.
 - The channel's own env vars (from its `channel.yaml`, e.g. `DISCORD_TOKEN`)
   are always withheld from the box unless you list them in `box.env`.
 
-Some of this is implemented with local shims while the matching box features
-land; see [scratch/box-frs.md](scratch/box-frs.md).
+Each of these maps onto a `@genkit-ai/box` feature (`execRunner`,
+`podmanRunner`, `remoteRunner`, `sessionRoute`, `inheritEnv`, `warm`).
 
 ## Agents without a runtime (agent-dir)
 
@@ -198,7 +199,9 @@ const channel = initChannel<MyOptions>();
 const { expose, options } = channel; // from channels.yaml (`expose`, `with`)
 
 // Agents: a standard AgentAPI (chat, sendStream, getSnapshot, abort).
-const agent = channel.agent(expose.agents[0]);
+// One handle per conversation (they're cheap): with `box.route: session`, every
+// call through it goes to that conversation's box.
+const agent = channel.agent(expose.agents[0], { sessionId });
 const turn = agent.chat({ sessionId }).sendStream('hello');
 for await (const chunk of turn.stream) process.stdout.write(chunk.text);
 const res = await turn.response;
@@ -297,7 +300,6 @@ authenticated link; the numbers need re-measuring.
 ```
 genkit-channels/
   src/                      CLI + initChannel helper library
-    lib/shims/              local stand-ins for pending box features
   channels/
     http/                   the bundled Node HTTP channel (plain JS)
     http-ts/                the same, in TypeScript

@@ -19,7 +19,8 @@
  * model, no API key), over both transports:
  *  - exec runner: box spawns the app, which dials back over reflection v2,
  *  - remote runner: the app is started separately and serves v1 reflection
- *    on a port with a secret, the way the Cloud Run sidecar runs (FR-2 shim).
+ *    on a port with a secret, the way the Cloud Run sidecar runs (box
+ *    remoteRunner).
  * Run after `pnpm build`:
  *
  *   node test/real-app.mjs

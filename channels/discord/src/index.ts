@@ -72,20 +72,19 @@ async function main(): Promise<void> {
 
   // Reads the deployment config. Sync: the app's box starts on the first turn
   // (or at startup with `box.warm: true`).
-  const channel = initChannel<DiscordOptions>();
-  const { options } = channel;
+  const app = initChannel<DiscordOptions>();
+  const { options } = app;
 
   // The bot drives exactly one agent: `expose.agent` in channels.yaml.
-  if (channel.expose.agents.length !== 1) {
+  if (app.expose.agents.length !== 1) {
     console.error(
       '[channel:discord] expose exactly one agent (`expose.agent` in ' +
-        `channels.yaml); got: ${channel.expose.agents.join(', ') || '(none)'}`
+        `channels.yaml); got: ${app.expose.agents.join(', ') || '(none)'}`
     );
     process.exit(1);
   }
-  const agentName = channel.expose.agents[0];
-  const agent = channel.agent(agentName);
-  const agentState = channel.agentState(agentName);
+  const agentName = app.expose.agents[0];
+  const agentState = app.agentState(agentName);
 
   // Ready once the gateway login completes. The app is not part of readiness:
   // a boxed app may legitimately not be running until the first message.
@@ -235,6 +234,9 @@ async function main(): Promise<void> {
     channel: Message['channel'];
     input: string;
   }): Promise<void> {
+    // One handle per conversation: with `box.route: session` every call of
+    // this conversation goes to its own box. Handles are cheap.
+    const agent = app.agent(agentName, { sessionId });
     const chat: AgentChat =
       agentState === 'client'
         ? agent.chat({ state: clientState.get(sessionKey) })
@@ -328,7 +330,7 @@ async function main(): Promise<void> {
     );
   } catch (e) {
     console.error(`[channel:discord] ${(e as Error).message}`);
-    await channel.close();
+    await app.close();
     process.exit(1);
   }
 
@@ -340,7 +342,7 @@ async function main(): Promise<void> {
     } catch {
       // ignore
     }
-    await channel.close();
+    await app.close();
     process.exit(0);
   };
   process.on('SIGTERM', () => shutdown('SIGTERM'));

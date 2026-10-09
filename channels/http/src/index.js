@@ -32,6 +32,7 @@
 
 import express from 'express';
 import { initChannel } from 'genkit-channels';
+import { randomUUID } from 'node:crypto';
 
 async function main() {
   const channel = initChannel();
@@ -128,11 +129,14 @@ async function handleAgent(channel, name, req, res, stream, abortSignal) {
       .json({ error: { message: '`message` (string) is required' } });
     return;
   }
-  const agent = channel.agent(name);
+  // Pick the session id up front so even the first turn routes to the
+  // conversation's box under `box.route: session`.
+  const sessionId = body.sessionId ?? body.state?.sessionId ?? randomUUID();
+  const agent = channel.agent(name, { sessionId });
   const chat =
     channel.agentState(name) === 'client'
       ? agent.chat(body.state ? { state: body.state } : undefined)
-      : agent.chat(body.sessionId ? { sessionId: body.sessionId } : undefined);
+      : agent.chat({ sessionId });
 
   const turn = chat.sendStream(body.message, { abortSignal });
   if (stream) {
@@ -145,7 +149,7 @@ async function handleAgent(channel, name, req, res, stream, abortSignal) {
   const result = {
     text: response.text,
     finishReason: response.finishReason,
-    sessionId: response.sessionId,
+    sessionId: response.sessionId ?? sessionId,
     snapshotId: response.snapshotId,
     state: response.raw.state,
   };
