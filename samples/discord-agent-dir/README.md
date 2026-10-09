@@ -41,8 +41,8 @@ The agent folder name (`concierge`) is the agent name.
 
 ```bash
 cd samples/discord-agent-dir
-cp .env.example .env
-# then edit .env and fill in DISCORD_TOKEN and GEMINI_API_KEY
+cp .env.example .env.local
+# then edit .env.local and fill in DISCORD_TOKEN and GEMINI_API_KEY
 
 # Install the Discord channel into this project.
 genkit-channel add ../../channels discord

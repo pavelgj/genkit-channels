@@ -22,21 +22,26 @@
  * the deployment:
  *  - exec/podman `cmd` defaults to the `runtime` command,
  *  - `cwd` defaults to where the app lives (`appDir`),
- *  - the channel manifest's own `env` (e.g. `DISCORD_TOKEN`) is added to
- *    `denyEnv`, so channel secrets never reach the app unless the user
- *    explicitly allows them in `box.env`.
+ *  - secrets are routed by who declared them: channel secrets (from its
+ *    `channel.yaml`, e.g. `DISCORD_TOKEN`) are added to `denyEnv`, so they
+ *    never reach the app unless the user explicitly lists them in `box.env`;
+ *    app secrets are added to `box.env` when the user set an allowlist, so
+ *    they don't have to be listed twice,
+ *  - the channel's secret names (never values) are recorded so
+ *    `initChannel` can check them at startup.
  */
 
 import path from 'path';
 import type { BoxConfig, ChannelConfigInput, RunnerConfig } from '../lib/config';
+import type { ResolvedSecret } from './secrets';
 import type { DeploymentManifest, ResolvedRuntime } from './types';
 
 export interface ChannelConfigParts {
   deployment: DeploymentManifest;
   runtime: ResolvedRuntime;
   expose: { agents: string[]; flows: string[] };
-  /** Env var names the channel itself needs (from its `channel.yaml`). */
-  channelEnv: string[];
+  /** Every secret of the deployment, routed to channel or app. */
+  secrets: readonly ResolvedSecret[];
   /**
    * Where the app lives, relative to the config file's dir (or absolute).
    * `runtime.cwd` is resolved inside it.
@@ -45,7 +50,7 @@ export interface ChannelConfigParts {
 }
 
 export function buildChannelConfig(parts: ChannelConfigParts): ChannelConfigInput {
-  const { deployment, runtime, expose, channelEnv, appDir } = parts;
+  const { deployment, runtime, expose, secrets, appDir } = parts;
   const box: BoxConfig = deployment.box ?? {};
   const appCwd = path.join(appDir, runtime.cwd);
   const runtimeCmd = [runtime.command, ...runtime.args];
@@ -62,19 +67,35 @@ export function buildChannelConfig(parts: ChannelConfigParts): ChannelConfigInpu
     }
   })();
 
+  const channelSecrets = secrets
+    .filter((s) => s.consumer === 'channel')
+    .map((s) => s.name);
+  const appSecrets = secrets
+    .filter((s) => s.consumer === 'app')
+    .map((s) => s.name);
+
   const allowed = new Set(box.env ?? []);
   const denyEnv = dedupe([
     ...(box.denyEnv ?? []),
-    ...channelEnv.filter((name) => !allowed.has(name)),
+    ...channelSecrets.filter((name) => !allowed.has(name)),
   ]);
+  // Without an allowlist an exec box inherits everything not denied, app
+  // secrets included. With one, app secrets join it. Containers inherit
+  // nothing, so a podman box always gets its secrets passed explicitly.
+  const env =
+    box.env || runner.type === 'podman'
+      ? dedupe([...(box.env ?? []), ...appSecrets])
+      : undefined;
 
   return {
     expose,
     agentState: deployment.expose?.agentState ?? {},
     options: deployment.with ?? {},
+    secrets: channelSecrets,
     box: {
       ...box,
       runner,
+      ...(env ? { env } : {}),
       ...(denyEnv.length > 0 ? { denyEnv } : {}),
     },
   };

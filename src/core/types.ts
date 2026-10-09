@@ -27,6 +27,7 @@ import type {
   BoxConfig,
   ChannelConfigInput,
 } from '../lib/config';
+import type { DeploymentSecrets, ResolvedSecret } from './secrets';
 
 /**
  * A channel name is a free-form string mapping to a directory under
@@ -200,8 +201,18 @@ export interface DeploymentManifest {
   packaging?: PackagingName;
   /** Target region (Cloud Run). */
   region?: string;
-  /** Env var names to forward to the running service (and the child). */
+  /**
+   * Non-secret env var names to forward to the running service (values come
+   * from the deploy environment and are set as plain env).
+   */
   env?: string[];
+  /**
+   * Secrets the app needs (env var names), or a map from name to a platform
+   * reference when the platform's name differs (Cloud Run: a Secret Manager
+   * secret name, `name@version`, or a full resource name). Channel secrets come
+   * from the channel's `channel.yaml`; list them here only to remap them.
+   */
+  secrets?: DeploymentSecrets;
   /** Override the platform service name (defaults to `name`). */
   serviceName?: string;
   /**
@@ -289,8 +300,13 @@ export interface ChannelDefinition {
    * can skip building the channel image and use this directly.
    */
   image?: string;
-  /** Env var names the channel itself needs (surfaced in .env.example). */
+  /** Non-secret env var names the channel itself reads. */
   env?: string[];
+  /**
+   * Secrets the channel itself needs (env var names, e.g. `DISCORD_TOKEN`).
+   * Delivered to the channel process only, never to the boxed app.
+   */
+  secrets?: string[];
   /** JSONata rules that fail the deploy when falsy. */
   validate?: ChannelRule[];
   /** JSONata rules that log a warning when truthy. */
@@ -391,6 +407,11 @@ export interface ComposePlan {
   config: Record<string, unknown>;
   /** Env var names to forward (channel env + manifest env). */
   env: string[];
+  /**
+   * Every secret the deployment needs (channel + app), with who receives it
+   * and its platform reference. Values are never part of the plan.
+   */
+  secrets: ResolvedSecret[];
   /**
    * Rewrites `channel.config.json` in the staging dir. Targets use this to
    * change how the app is boxed (e.g. sidecar switches to a remote runner).

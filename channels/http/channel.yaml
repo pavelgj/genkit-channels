@@ -7,8 +7,8 @@ language: node
 # Node entry to run (relative to the channel dir). Plain ESM JS.
 entry: src/index.js
 
-# Env var names the channel itself needs (surfaced in .env.example). The HTTP
-# channel needs none of its own; the user app's env is declared in the manifest.
+# Non-secret env vars and secrets the channel itself needs: none. The app's
+# secrets are declared on the deployment in channels.yaml.
 env: []
 
 # Service settings this channel recommends. HTTP endpoints are meant to be

@@ -133,6 +133,11 @@ export const ChannelConfigSchema = z.object({
   agentState: z.record(AgentStateSchema).default({}),
   /** Channel-specific options (the deployment's `with` block). */
   options: z.record(z.unknown()).default({}),
+  /**
+   * Names (never values) of the secrets the channel process needs. Checked at
+   * startup and readable with `channel.secret(name)`.
+   */
+  secrets: z.array(z.string()).default([]),
   box: BoxConfigSchema.default({}),
 });
 export type ChannelConfigInput = z.input<typeof ChannelConfigSchema>;

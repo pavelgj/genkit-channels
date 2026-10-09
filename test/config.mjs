@@ -67,7 +67,7 @@ function compile() {
     },
     runtime,
     expose: { agents: ['concierge'], flows: [] },
-    channelEnv: ['DISCORD_TOKEN'],
+    secrets: [secret('DISCORD_TOKEN', 'channel'), secret('GEMINI_API_KEY', 'app')],
     appDir: 'user',
   });
   const runner = compiled.box.runner;
@@ -77,7 +77,8 @@ function compile() {
   );
   check('runner cwd points at the app', runner.cwd === 'user/app');
   check('user runner fields are kept', runner.isolate === 'local');
-  check('channel env is denied to the box', compiled.box.denyEnv?.includes('DISCORD_TOKEN'));
+  check('channel secret is denied to the box', compiled.box.denyEnv?.includes('DISCORD_TOKEN'));
+  check('channel secret names are recorded', JSON.stringify(compiled.secrets) === '["DISCORD_TOKEN"]');
   check('route is kept', compiled.box.route === 'session');
   check('agentState is carried over', compiled.agentState.concierge === 'client');
   check('with becomes options', compiled.options.session === 'thread');
@@ -86,7 +87,7 @@ function compile() {
     deployment: { name: 'x', channel: 'discord', box: { env: ['DISCORD_TOKEN'] } },
     runtime,
     expose: { agents: [], flows: [] },
-    channelEnv: ['DISCORD_TOKEN'],
+    secrets: [secret('DISCORD_TOKEN', 'channel')],
     appDir: 'user',
   });
   check('an explicit box.env allow wins over the channel deny', !allowed.box.denyEnv);
@@ -99,11 +100,41 @@ function compile() {
     },
     runtime,
     expose: { agents: [], flows: ['f'] },
-    channelEnv: [],
+    secrets: [],
     appDir: 'user',
   });
   check('remote runner is left as written', !('cmd' in remote.box.runner));
   check('compiled config validates', !!parseChannelConfig(compiled));
+
+  // App secrets join an allowlist so they aren't listed twice.
+  const narrowed = buildChannelConfig({
+    deployment: { name: 'x', channel: 'discord', box: { env: [] } },
+    runtime,
+    expose: { agents: [], flows: [] },
+    secrets: [secret('DISCORD_TOKEN', 'channel'), secret('GEMINI_API_KEY', 'app')],
+    appDir: 'user',
+  });
+  check('app secrets join an empty allowlist', JSON.stringify(narrowed.box.env) === '["GEMINI_API_KEY"]');
+  const open = buildChannelConfig({
+    deployment: { name: 'x', channel: 'discord' },
+    runtime,
+    expose: { agents: [], flows: [] },
+    secrets: [secret('GEMINI_API_KEY', 'app')],
+    appDir: 'user',
+  });
+  check('no allowlist: app secrets are inherited, none is added', open.box.env === undefined);
+  const podman = buildChannelConfig({
+    deployment: { name: 'x', channel: 'discord', box: { runner: { type: 'podman', image: 'node:22' } } },
+    runtime,
+    expose: { agents: [], flows: [] },
+    secrets: [secret('GEMINI_API_KEY', 'app')],
+    appDir: 'user',
+  });
+  check('podman always gets app secrets passed in', JSON.stringify(podman.box.env) === '["GEMINI_API_KEY"]');
+}
+
+function secret(name, consumer) {
+  return { name, consumer, ref: name, declaredBy: consumer };
 }
 
 function envPolicy() {

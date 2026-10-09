@@ -29,12 +29,20 @@ deployments:
       # 'thread' (default) keeps a separate conversation per thread/DM;
       # 'channel' shares one conversation per channel.
       session: thread
+    # Secrets the app needs. The channel's own DISCORD_TOKEN is declared by the
+    # channel (channel.yaml), so it isn't listed. Locally they come from
+    # .env.local; on Cloud Run, from Secret Manager secrets of the same names
+    # (deploy checks they exist and prints how to create any that don't).
+    # To use a different secret name or pin a version:
+    #   secrets:
+    #     GEMINI_API_KEY: gemini-key@3
+    secrets: [GEMINI_API_KEY]
     # How the app runs (all optional; @genkit-ai/box). The default is one local
     # subprocess, started on the first message.
     box:
-      # Only these env vars reach the app. The channel's own DISCORD_TOKEN is
-      # kept out of the box regardless.
-      env: [GEMINI_API_KEY]
+      # The box gets only the basics (PATH, HOME, ...) plus the app's secrets.
+      # DISCORD_TOKEN stays with the channel either way.
+      env: []
       # Uncomment to jail the app in an OS sandbox (seatbelt on macOS,
       # bubblewrap on Linux). Dev-time guardrail, not containment.
       # runner:

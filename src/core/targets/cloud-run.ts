@@ -44,6 +44,13 @@ import fs from 'fs';
 import path from 'path';
 import type { ChannelConfigInput } from '../../lib/config';
 import { renderSingleContainerDockerfile } from '../packaging/single-container';
+import type { ResolvedSecret } from '../secrets';
+import {
+  checkGcpSecrets,
+  parseGcpSecretRef,
+  serviceYamlSecrets,
+  setSecretsFlag,
+} from './gcp-secrets';
 import {
   renderChannelDockerfile,
   renderUserDockerfile,
@@ -64,14 +71,33 @@ export const cloudRunTarget: DeployTarget = {
   defaultPackaging: 'single-container',
 
   async validate(ctx: DeployTargetContext) {
-    if (!ctx.execute) return; // dry-run: skip prerequisite checks
+    // Reference syntax is checked offline, so a dry run catches typos too.
+    for (const s of ctx.plan.secrets) parseGcpSecretRef(s.ref);
+
     const check = spawnSync('gcloud', ['--version'], { encoding: 'utf8' });
-    if (check.status !== 0) {
+    const hasGcloud = check.status === 0;
+    if (!ctx.execute) {
+      // Dry run: the secret check is read-only, so run it when we can, and
+      // report rather than fail.
+      if (hasGcloud) {
+        try {
+          checkGcpSecrets(ctx.plan.secrets);
+        } catch (e) {
+          logger.warn(`[dry-run] ${(e as Error).message}`);
+        }
+      } else if (ctx.plan.secrets.length > 0) {
+        logger.warn('[dry-run] gcloud not found; skipping the secrets check.');
+      }
+      return;
+    }
+    if (!hasGcloud) {
       throw new Error(
         'gcloud CLI not found. Install the Google Cloud SDK to use the ' +
           'cloud-run target: https://cloud.google.com/sdk/docs/install'
       );
     }
+    // Fail before any build if a secret doesn't exist (prints how to fix).
+    checkGcpSecrets(ctx.plan.secrets);
     if (ctx.packaging === 'sidecar' && !ctx.deployment.imageRepo) {
       throw new Error(
         'sidecar packaging requires an image repository. Set ' +
@@ -122,6 +148,12 @@ async function deploySingleContainer(
   if (deployment.region) args.push('--region', deployment.region);
   const envPairs = forwardedEnv(deployment.env);
   if (envPairs.length > 0) args.push('--set-env-vars', envPairs.join(','));
+  // One container, one env: channel and app secrets are both injected, and
+  // the channel's box config keeps the channel's own secrets out of the app.
+  // Sidecar packaging separates them fully.
+  if (plan.secrets.length > 0) {
+    args.push('--set-secrets', setSecretsFlag(plan.secrets));
+  }
 
   const printable = printableCmd('gcloud', args);
   if (!execute) {
@@ -184,6 +216,7 @@ async function deploySidecar(
     userImage,
     reflectionSecret,
     userEnv: deployment.env ?? [],
+    secrets: plan.secrets,
     settings: serviceSettings,
   });
   const servicePath = path.join(plan.stagingDir, 'service.yaml');
@@ -308,10 +341,13 @@ export function renderServiceYaml(opts: {
   userImage: string;
   reflectionSecret: string;
   userEnv: string[];
+  /** Each goes only to the container of its consumer. */
+  secrets?: readonly ResolvedSecret[];
   settings: ResolvedServiceSettings;
 }): string {
   const { service, channelImage, userImage, reflectionSecret, userEnv, settings } =
     opts;
+  const secretYaml = serviceYamlSecrets(opts.secrets ?? []);
 
   const envLine = (name: string, value: string) =>
     `            - name: ${name}\n              value: ${jsonString(value)}`;
@@ -322,15 +358,22 @@ export function renderServiceYaml(opts: {
     .map((k) => envLine(k, process.env[k]!));
 
   // Reflection on without GENKIT_ENV=dev (production defaults), bound to a
-  // fixed loopback port and guarded by the shared secret. TODO: move the secret
-  // to Secret Manager instead of a plain env value in the spec.
+  // fixed loopback port and guarded by the shared token. The token is a plain
+  // env value on purpose: it guards a loopback port inside one instance (to
+  // use it you already need code running there, with every secret anyway),
+  // and it is regenerated on every deploy. Secret Manager would add a manual
+  // setup step for no real gain.
   const appEnv = [
     envLine('GENKIT_REFLECTION_ENABLED', 'true'),
     envLine('GENKIT_REFLECTION_PORT', String(REFLECTION_PORT)),
     envLine('GENKIT_REFLECTION_SECRET_TOKEN', reflectionSecret),
     ...userEnvLines,
+    ...secretYaml.envLines('app'),
   ].join('\n');
-  const channelEnv = envLine('GENKIT_REFLECTION_SECRET_TOKEN', reflectionSecret);
+  const channelEnv = [
+    envLine('GENKIT_REFLECTION_SECRET_TOKEN', reflectionSecret),
+    ...secretYaml.envLines('channel'),
+  ].join('\n');
 
   // Template annotations: CPU throttling + autoscaling bounds.
   const annotations: string[] = [
@@ -338,6 +381,7 @@ export function renderServiceYaml(opts: {
       settings.cpu === 'always-allocated' ? 'false' : 'true'
     )}`,
   ];
+  if (secretYaml.annotation) annotations.push(secretYaml.annotation);
   if (settings.minInstances !== undefined) {
     annotations.push(
       `        autoscaling.knative.dev/minScale: ${jsonString(

@@ -63,7 +63,10 @@ run('live', async () => {
     deployment,
     runtime: getRuntimeBuilder('js').resolve(deployment.runtime),
     expose: { agents: [deployment.expose.agent], flows: [] },
-    channelEnv: ['DISCORD_TOKEN'],
+    secrets: [
+      { name: 'DISCORD_TOKEN', consumer: 'channel', ref: 'DISCORD_TOKEN', declaredBy: 'channel discord' },
+      { name: 'GEMINI_API_KEY', consumer: 'app', ref: 'GEMINI_API_KEY', declaredBy: 'app' },
+    ],
     appDir: sampleDir,
   });
   check('the channel secret is denied to the box', config.box.denyEnv?.includes('DISCORD_TOKEN'));

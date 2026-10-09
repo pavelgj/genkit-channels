@@ -51,6 +51,7 @@ import {
   type ChannelConfigInput,
 } from '../lib/config';
 import { buildChannelConfig } from './channel-config';
+import { resolveSecrets, secretLikeNames } from './secrets';
 import type {
   ComposeContext,
   ComposePlan,
@@ -102,6 +103,19 @@ export async function compose(
   const env = Array.from(
     new Set([...(channel.env ?? []), ...(deployment.env ?? [])])
   );
+  const secrets = resolveSecrets({
+    channelName: channel.name,
+    channelSecrets: channel.secrets ?? [],
+    deploymentSecrets: deployment.secrets,
+  });
+  const plainSecrets = secretLikeNames(deployment.env ?? []);
+  if (plainSecrets.length > 0) {
+    logger.warn(
+      `Deployment "${deployment.name}": env ${plainSecrets.join(', ')} ` +
+        `look${plainSecrets.length === 1 ? 's' : ''} like secrets. Values in ` +
+        `\`env\` are deployed as plain env vars; move them to \`secrets\`.`
+    );
+  }
 
   const ctx: ComposeContext = {
     deployment,
@@ -153,7 +167,7 @@ export async function compose(
       deployment,
       runtime,
       expose,
-      channelEnv: channel.env ?? [],
+      secrets,
       appDir,
     });
   const channelConfig = channelConfigFor('user');
@@ -183,6 +197,7 @@ export async function compose(
     expose,
     config: deployment.with ?? {},
     env,
+    secrets,
     writeChannelConfig,
     channelConfig,
     channelConfigFor,

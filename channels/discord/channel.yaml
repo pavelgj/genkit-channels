@@ -16,9 +16,10 @@ entry: dist/index.js
 build: npm install && npm run build
 
 
-# Env var names the channel itself needs (surfaced in .env.example). The bot
-# token from the Discord developer portal is required.
-env: [DISCORD_TOKEN]
+# Secrets the channel itself needs. They reach the channel process only, never
+# the boxed app. Locally they come from .env.local; on deploy, from the
+# platform's secret store (Cloud Run: Secret Manager).
+secrets: [DISCORD_TOKEN]
 
 # Service settings this channel recommends. A gateway bot keeps an outbound
 # WebSocket open, so it must stay warm and keep its CPU allocated even when no

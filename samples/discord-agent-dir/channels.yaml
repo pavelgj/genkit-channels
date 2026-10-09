@@ -31,9 +31,11 @@ deployments:
       # 'thread' (default) keeps a separate conversation per thread/DM;
       # 'channel' shares one conversation per channel.
       session: thread
-    # Env vars forwarded to the running service.
-    env: [DISCORD_TOKEN, GEMINI_API_KEY]
-    # The agent runs in a box. The channel's own env (DISCORD_TOKEN) is kept out
-    # of it automatically; `env` narrows it further to just what it needs.
+    # Secrets the app needs. The channel's own DISCORD_TOKEN is declared by the
+    # channel (channel.yaml), so it isn't listed. Locally: .env.local. On Cloud
+    # Run: Secret Manager secrets of the same names (deploy checks they exist).
+    secrets: [GEMINI_API_KEY]
+    # The agent runs in a box that only gets the basics plus its secrets.
+    # DISCORD_TOKEN stays with the channel.
     box:
-      env: [GEMINI_API_KEY]
+      env: []

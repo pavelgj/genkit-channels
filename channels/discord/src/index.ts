@@ -64,15 +64,11 @@ interface DiscordOptions {
 }
 
 async function main(): Promise<void> {
-  const token = process.env.DISCORD_TOKEN;
-  if (!token) {
-    console.error('[channel:discord] DISCORD_TOKEN is not set');
-    process.exit(1);
-  }
-
-  // Reads the deployment config. Sync: the app's box starts on the first turn
-  // (or at startup with `box.warm: true`).
+  // Reads the deployment config and checks the secrets declared in
+  // channel.yaml. Sync: the app's box starts on the first turn (or at startup
+  // with `box.warm: true`).
   const app = initChannel<DiscordOptions>();
+  const token = app.secret('DISCORD_TOKEN');
   const { options } = app;
 
   // The bot drives exactly one agent: `expose.agent` in channels.yaml.

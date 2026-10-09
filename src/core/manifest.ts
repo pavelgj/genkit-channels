@@ -32,6 +32,7 @@ import {
   BoxConfigSchema,
   formatZodError,
 } from '../lib/config';
+import { DeploymentSecretsSchema, SecretNameSchema } from './secrets';
 import { parseServiceSettings } from './service-settings';
 import { isKnownTarget, knownTargets } from './targets';
 import type {
@@ -153,6 +154,16 @@ function validateDeployment(
     d.box,
     `${where}.box`
   );
+  const secrets = parseOrThrow(
+    DeploymentSecretsSchema.optional(),
+    d.secrets,
+    `${where}.secrets`
+  );
+  const env = parseOrThrow(
+    z.array(SecretNameSchema).optional(),
+    d.env,
+    `${where}.env`
+  );
 
   return {
     name: d.name,
@@ -170,7 +181,8 @@ function validateDeployment(
     target: d.target,
     packaging: d.packaging,
     region: d.region,
-    env: d.env,
+    env,
+    secrets,
     serviceName: d.serviceName,
     imageRepo: d.imageRepo,
     service,

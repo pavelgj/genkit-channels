@@ -88,6 +88,62 @@ Agents are server-managed (they have a session store) unless you say otherwise:
         helper: client   # no store: the channel carries the conversation state
 ```
 
+### Secrets
+
+Secrets are env vars whose values the CLI never handles on a cloud deploy. The
+channel declares what it needs in its `channel.yaml`; you declare what your app
+needs on the deployment:
+
+```yaml
+# channels/discord/channel.yaml (channel author)
+secrets: [DISCORD_TOKEN]
+```
+
+```yaml
+# channels.yaml (you)
+    secrets: [GEMINI_API_KEY]
+```
+
+Channel secrets go to the channel process only; app secrets go to the app
+only. The box config is generated from that, so you don't repeat names in
+`box.env`.
+
+**Locally** (`deploy --local`), values come from `.env` files in the project,
+later files winning: `.env`, `.env.local`, `.env.<deployment>`,
+`.env.<deployment>.local`. Variables already set in your shell win over all of
+them. Keep real values in the `*.local` files and gitignore them. A missing
+secret stops the run before anything starts:
+
+```
+Missing secrets:
+  DISCORD_TOKEN   (channel discord)
+  GEMINI_API_KEY  (app)
+Add them to .env.local (or .env.discord-bot.local), or set them in your shell.
+```
+
+**On Cloud Run**, each secret is a Secret Manager secret of the same name
+(latest version), injected by Cloud Run at startup. Before building, `deploy`
+checks they exist (read-only) and, if any don't, stops and prints the
+`gcloud secrets create ...` and access-grant commands to run. It never creates
+secrets itself. With `--dry-run` the same check is reported as a warning.
+
+Use a map when the platform name differs or to pin a version:
+
+```yaml
+    secrets:
+      GEMINI_API_KEY: gemini-key@3
+      DISCORD_TOKEN: projects/shared-prj/secrets/discord-token
+```
+
+Single-container packaging puts every secret in the one container's env (the
+box still keeps channel secrets away from the app). Sidecar packaging gives
+each container only its own.
+
+Channels read their secrets with `channel.secret('DISCORD_TOKEN')`, which
+throws a helpful error if it's missing; `initChannel()` checks all declared
+secrets at startup. Plain `env:` on a deployment is for non-secret config and
+is deployed as plain env vars (the CLI warns if a name looks like a secret).
+
 ### Boxing the app
 
 The optional `box` block decides where and how your app runs. It maps directly
@@ -100,7 +156,7 @@ onto `@genkit-ai/box`, and the channel code doesn't change:
         isolate: local        # none | local | bubblewrap | sandbox-exec
       route: session          # app (default, one box) | session | request
       idle: 10m               # reclaim idle boxes (session default 5m)
-      env: [GEMINI_API_KEY]   # the only env vars the app receives
+      env: []                 # only basics (PATH, HOME, ...) + the app's secrets
       warm: true              # start the app (or the shared box) at startup
 ```
 
@@ -115,8 +171,9 @@ onto `@genkit-ai/box`, and the channel code doesn't change:
   channel opens one handle per conversation (`channel.agent(name, { sessionId
   })`; the bundled channels do). Flows share one box. Pair it with a persistent
   session store if conversations must outlive `idle`.
-- The channel's own env vars (from its `channel.yaml`, e.g. `DISCORD_TOKEN`)
-  are always withheld from the box unless you list them in `box.env`.
+- The channel's secrets (from its `channel.yaml`, e.g. `DISCORD_TOKEN`) are
+  always withheld from the box unless you list them in `box.env`. The app's
+  `secrets` are added to `box.env` automatically.
 
 Each of these maps onto a `@genkit-ai/box` feature (`execRunner`,
 `podmanRunner`, `remoteRunner`, `sessionRoute`, `inheritEnv`, `warm`).
@@ -223,6 +280,8 @@ await channel.close();
 
 A few more things are available when you need them:
 
+- `channel.secret(name)` reads a secret declared in `channel.yaml` (`secrets:`)
+  and throws a helpful error if it isn't set.
 - `channel.warm()` starts the app now rather than on the first call.
 - `channel.listActions()` asks the app what it has. It is opt-in and may start
   a box just to answer.

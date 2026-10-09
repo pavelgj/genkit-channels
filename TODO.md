@@ -40,8 +40,14 @@ inline.
   moving to `@genkit-ai/box`: per-box secret, `GENKIT_REFLECTION_ENABLED`.
 - [ ] **No auth on the transport.** The HTTP channels expose actions with no
   authn/authz. Decide on at least optional channel auth.
-- [ ] **Sidecar reflection secret is a plain env value in service.yaml.** Move
-  it to Secret Manager.
+- [x] ~~Sidecar reflection secret is a plain env value in service.yaml.~~
+  Won't fix, on purpose: it guards a loopback port inside one instance and is
+  regenerated per deploy; Secret Manager would only add a setup step. (User
+  secrets do go through Secret Manager; see README "Secrets".)
+- [ ] **Secrets on more targets.** Secret references are platform-neutral
+  strings; only Cloud Run (Secret Manager) interprets them today. Also
+  consider a custom runtime service account (the printed IAM grant assumes the
+  default compute account).
 - [ ] **Go channels.** Removed `http-go`; bring Go channels back as a clean
   port once there is a Go genkit-in-a-box. (Go *apps* still work: they only
   need to honor the reflection env vars.)

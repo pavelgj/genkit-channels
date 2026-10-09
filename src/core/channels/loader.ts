@@ -21,7 +21,10 @@
 
 import fs from 'fs';
 import path from 'path';
+import { z } from 'genkit';
 import * as YAML from 'yaml';
+import { formatZodError } from '../../lib/config';
+import { SecretNameSchema } from '../secrets';
 import { parseServiceSettings } from '../service-settings';
 import type {
   ChannelDefinition,
@@ -135,6 +138,16 @@ function validateDefinition(
   const validate = parseRules(parsed.validate, 'validate', manifestPath);
   const warn = parseRules(parsed.warn, 'warn', manifestPath);
   const env = Array.isArray(parsed.env) ? parsed.env : undefined;
+  const secretsParsed = z
+    .array(SecretNameSchema)
+    .optional()
+    .safeParse(parsed.secrets);
+  if (!secretsParsed.success) {
+    throw new Error(
+      formatZodError(secretsParsed.error, `${manifestPath}: secrets`)
+    );
+  }
+  const secrets = secretsParsed.data;
 
   const recommends = parseRecommends(parsed.recommends, manifestPath);
 
@@ -147,6 +160,7 @@ function validateDefinition(
     build: parsed.build,
     image: parsed.image,
     env,
+    secrets,
     validate,
     warn,
     recommends,

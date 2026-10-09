@@ -1,3 +1,4 @@
 .genkit/
 node_modules/
-.env
+# Local secrets (see .env.example).
+.env*.local

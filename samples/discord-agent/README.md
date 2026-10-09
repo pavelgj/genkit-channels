@@ -35,8 +35,8 @@ discord-agent/
 cd samples/discord-agent
 npm install
 
-cp .env.example .env
-# then edit .env and fill in DISCORD_TOKEN and GEMINI_API_KEY
+cp .env.example .env.local
+# then edit .env.local and fill in DISCORD_TOKEN and GEMINI_API_KEY
 ```
 
 Install the Discord channel into this project (points at the channels dir in
@@ -80,12 +80,13 @@ as text arrives.
 
 Everything below is a `box:` block on the deployment.
 
-Only hand the app the keys it needs (the channel's `DISCORD_TOKEN` is withheld
-automatically):
+Only hand the app the basics plus its own secrets (`env: []`; the app's
+`secrets` are added for you, and the channel's `DISCORD_TOKEN` is withheld
+either way):
 
 ```yaml
 box:
-  env: [GEMINI_API_KEY]
+  env: []
 ```
 
 Jail it in an OS sandbox (macOS seatbelt / Linux bubblewrap). This guards
@@ -93,7 +94,7 @@ against accidents; it is not containment for hostile code:
 
 ```yaml
 box:
-  env: [GEMINI_API_KEY]
+  env: []
   runner: { type: exec, isolate: local }
 ```
 
@@ -113,7 +114,7 @@ Linux `node_modules` volume as described in the `@genkit-ai/box` README):
 
 ```yaml
 box:
-  env: [GEMINI_API_KEY]
+  # Containers start with no host env; the app's `secrets` are passed in.
   runner:
     type: podman
     image: node:22-slim
@@ -133,5 +134,10 @@ the deployment in `channels.yaml`:
     region: us-central1
 ```
 
-then run `genkit-channels deploy discord-bot` (without `--local`). Set
-`DISCORD_TOKEN` and your model key as service env vars or secrets on the target.
+then run `genkit-channels deploy discord-bot` (without `--local`).
+
+`DISCORD_TOKEN` (declared by the channel) and `GEMINI_API_KEY` (declared under
+`secrets` in `channels.yaml`) are read from Secret Manager secrets of the same
+names. The deploy checks they exist before building; if one is missing it stops
+and prints the `gcloud secrets create ...` and access-grant commands to run.
+The CLI never creates secrets itself.

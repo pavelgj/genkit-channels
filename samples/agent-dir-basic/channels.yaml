@@ -8,7 +8,8 @@
 # Install the channel first, then run locally:
 #
 #   genkit-channel add ../../channels http
-#   . ~/init-gemini.sh && genkit-channel deploy assistant --local
+#   echo 'GEMINI_API_KEY=...' > .env.local
+#   genkit-channel deploy assistant --local
 #
 deployments:
   - name: assistant
@@ -25,3 +26,5 @@ deployments:
       agent: assistant
       agentState:
         assistant: client
+    # The model key. Locally from .env.local; on Cloud Run from Secret Manager.
+    secrets: [GEMINI_API_KEY]

@@ -28,6 +28,12 @@ import fs from 'fs';
 import path from 'path';
 import { compose } from '../core/compose';
 import { loadManifest } from '../core/manifest';
+import {
+  dotenvFiles,
+  formatSecretList,
+  loadDotenv,
+  missingSecrets,
+} from '../core/secrets';
 import { resolveServiceSettings } from '../core/service-settings';
 import { getTarget } from '../core/targets';
 import type {
@@ -138,7 +144,7 @@ async function processOne(
   const { stagingDir } = plan;
 
   if (options.local) {
-    await runLocal(projectRoot, plan);
+    await runLocal(projectRoot, deployment.name, plan);
     return;
   }
 
@@ -203,6 +209,10 @@ async function processOne(
 /**
  * Runs the composed channel on the host (no container).
  *
+ * Secrets and other env come from the shell plus the project's `.env` files
+ * (`.env`, `.env.local`, `.env.<deployment>`, `.env.<deployment>.local`; the
+ * shell wins). Every declared secret must be present before we start.
+ *
  * Two adjustments vs the container path make local iteration fast:
  *  - install the staged channel's own deps if missing (the container does this
  *    via a Dockerfile RUN; locally we do it lazily), and
@@ -212,9 +222,26 @@ async function processOne(
  */
 async function runLocal(
   projectRoot: string,
+  deploymentName: string,
   plan: ComposePlan
 ): Promise<void> {
   const { stagingDir, channel, runtime, usingAgentDir } = plan;
+
+  // Local values come from .env files (the shell wins). Check every declared
+  // secret up front rather than failing on the first message.
+  const dotenv = loadDotenv(projectRoot, deploymentName);
+  const env: NodeJS.ProcessEnv = { ...dotenv.values, ...process.env };
+  if (dotenv.files.length > 0) {
+    logger.info(`Loaded ${dotenv.files.join(', ')}`);
+  }
+  const missing = missingSecrets(plan.secrets, env);
+  if (missing.length > 0) {
+    const [, local, , deploymentLocal] = dotenvFiles(deploymentName);
+    throw new Error(
+      `Missing secrets:\n${formatSecretList(missing)}\n` +
+        `Add them to ${local} (or ${deploymentLocal}), or set them in your shell.`
+    );
+  }
 
   ensureChannelDeps(path.join(stagingDir, 'channel'));
 
@@ -247,7 +274,7 @@ async function runLocal(
     const child = spawn('node', [channel.entryFromStaging], {
       cwd: stagingDir,
       env: {
-        ...process.env,
+        ...env,
         GENKIT_CHANNEL_CONFIG: localConfigPath,
       },
       stdio: 'inherit',

@@ -123,6 +123,12 @@ export interface Channel<Options = Record<string, unknown>> {
   /** A proxy for a flow in the app. Sync: the box starts on the first call. */
   flow(name: string): Flow;
   /**
+   * A secret the channel declared in its `channel.yaml` (`secrets:`). Reads
+   * the process env, however it got there (`.env` locally, Secret Manager on
+   * Cloud Run). Throws with a pointer to the config if it isn't set.
+   */
+  secret(name: string): string;
+  /**
    * Starts the app's box now instead of on the first call. Resolves when the
    * app is up. With `route: session` this warms the shared box (the one
    * flows and session-less calls use).
@@ -174,6 +180,16 @@ class ChannelImpl<Options> implements Channel<Options> {
     baseDir: string,
     opts: InitChannelOptions
   ) {
+    // Fail at startup, not on the first message, if a declared secret is
+    // missing. The CLI checks this before launching, so this mostly catches
+    // hand-run channels.
+    const missing = config.secrets.filter((name) => !process.env[name]);
+    if (missing.length > 0) {
+      throw new Error(
+        `Missing secrets: ${missing.join(', ')}. Add them to .env.local for ` +
+          `local runs (or set them in the environment).`
+      );
+    }
     this.expose = config.expose;
     // `with` is free-form user YAML; the channel declares its expected shape.
     this.options = config.options as Options;
@@ -225,6 +241,20 @@ class ChannelImpl<Options> implements Channel<Options> {
 
   agentState(name: string): AgentState {
     return this.config.agentState[name] ?? 'server';
+  }
+
+  secret(name: string): string {
+    const value = process.env[name];
+    if (value) return value;
+    const declared = this.config.secrets.includes(name);
+    throw new Error(
+      `Secret "${name}" is not set.` +
+        (declared
+          ? ' Add it to .env.local for local runs, or create it on the ' +
+            'platform (`genkit-channel deploy` lists what is missing).'
+          : ` It isn't declared either: add it to \`secrets\` in the ` +
+            `channel's channel.yaml.`)
+    );
   }
 
   flow(name: string): Flow {
