@@ -15,86 +15,59 @@
  */
 
 /**
- * Smoke test for the genkit-channels helper library. Exercises the full
- * reflection v2 round trip against the fake runtime: register, listActions,
- * non-streaming runAction, and streaming runAction. Run after `pnpm build`:
+ * Smoke test for initChannel over the fake runtime: lazy start, flow
+ * run/stream through box proxies, a config file on disk, and that the
+ * channel never calls listActions on its own. Run after `pnpm build`:
  *
  *   node test/smoke.mjs
  */
 
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { startAppProcess } from '../dist/index.js';
+import { initChannel } from '../dist/index.js';
+import { check, fakeRuntimeCmd, run } from './helpers.mjs';
 
-const here = path.dirname(fileURLToPath(import.meta.url));
-const fakeRuntime = path.join(here, 'fake-runtime.mjs');
-
-let failures = 0;
-function check(name, cond) {
-  if (cond) {
-    console.log(`  ok   ${name}`);
-  } else {
-    failures++;
-    console.error(`  FAIL ${name}`);
-  }
-}
-
-async function main() {
-  const app = startAppProcess({
-    child: { command: 'node', args: [fakeRuntime] },
-    readyTimeoutMs: 10000,
-  });
-
-  await app.ready;
-  console.log('child registered');
-
-  const actions = await app.listActions();
-  check('listActions returns echo flow', !!actions['/flow/echo']);
-  check(
-    'listActions returns weatherAgent agent',
-    !!actions['/agent/weatherAgent']
+run('smoke', async () => {
+  // A config file, like the one the CLI writes into the staging dir. The
+  // runner cwd is relative to the file.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'channel-smoke-'));
+  const configPath = path.join(dir, 'channel.config.json');
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify({
+      expose: { flows: ['echo', 'probe'] },
+      options: { greeting: 'hi' },
+      box: { runner: { type: 'exec', cmd: fakeRuntimeCmd, cwd: '.' } },
+    })
   );
 
-  // Non-streaming.
-  const res = await app.runAction({
-    key: '/flow/echo',
-    input: { hello: 'world' },
-  });
+  const channel = initChannel({ configPath });
+  check('expose comes from config', channel.expose.flows.includes('echo'));
+  check('options come from config', channel.options.greeting === 'hi');
+
+  // Creating a proxy starts nothing; the first call does.
+  const echo = channel.flow('echo');
+  const res = await echo.run({ hello: 'world' });
   check(
-    'runAction echoes input',
+    'flow run echoes input',
     JSON.stringify(res.result.echoed) === JSON.stringify({ hello: 'world' })
   );
-  check('runAction reports action key', res.result.action === '/flow/echo');
+  check('flow run reports a trace id', !!res.telemetry?.traceId);
 
-  // Streaming.
+  const { stream, output } = echo.stream({ q: 'stream?' });
   const chunks = [];
-  let sawTraceId = false;
-  const streamed = await app.runAction({
-    key: '/agent/weatherAgent',
-    input: { q: 'weather?' },
-    onChunk: (c) => chunks.push(c),
-    onTraceId: () => {
-      sawTraceId = true;
-    },
-  });
-  check('streaming produced chunks', chunks.length === 3);
-  check('streaming reported a trace id', sawTraceId);
-  check(
-    'streaming still returns a final result',
-    streamed.result.action === '/agent/weatherAgent'
-  );
+  for await (const c of stream) chunks.push(c);
+  check('flow stream produced chunks', chunks.length === 3);
+  check('flow stream returns the result', (await output).action === '/flow/echo');
 
-  await app.stop();
+  const probe = await channel.flow('probe').run({});
+  check('channel never called listActions', probe.result.listActionsCalls === 0);
 
-  if (failures > 0) {
-    console.error(`\n${failures} check(s) failed.`);
-    process.exit(1);
-  }
-  console.log('\nAll smoke checks passed.');
-  process.exit(0);
-}
+  // Explicit, opt-in discovery still works.
+  const actions = await channel.listActions();
+  check('listActions (opt-in) returns actions', !!actions['/flow/echo']);
 
-main().catch((e) => {
-  console.error('smoke test crashed:', e);
-  process.exit(1);
+  await channel.close();
+  fs.rmSync(dir, { recursive: true, force: true });
 });

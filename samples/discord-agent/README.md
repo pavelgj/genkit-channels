@@ -1,9 +1,10 @@
 # Discord agent sample
 
 A minimal Genkit agent wired to Discord with `genkit-channels`. The app defines
-one agent (`weatherAgent`) with a single tool; the Discord channel discovers it
-over reflection v2 and runs it as a gateway bot. There is no bot code in this
-sample, only the agent. The transport is entirely the channel's job.
+one agent (`weatherAgent`) with a single tool; the Discord channel runs it as a
+gateway bot, with the app itself in a box (`@genkit-ai/box`). There is no bot
+code in this sample, only the agent. The transport is entirely the channel's
+job.
 
 ## Layout
 
@@ -51,8 +52,8 @@ genkit-channels add ../../channels discord
 genkit-channels deploy discord-bot --local
 ```
 
-This builds the app, spawns it as a headless child, and connects the bot to
-Discord. Once you see `ready as <bot>#1234`, DM the bot or mention it in a
+This connects the bot to Discord; the app starts headless in its box on the
+first message (build it first with `npm run build`). Once you see `ready as <bot>#1234`, DM the bot or mention it in a
 channel it can see:
 
 ```
@@ -72,6 +73,54 @@ as text arrives.
 - `channels.yaml` binds the agent to the `discord` channel and sets a couple of
   channel options under `with`. See `channels/discord/channel.yaml` in this repo
   for the full list and the service settings a gateway bot recommends.
+- The `box` block in `channels.yaml` decides where the app runs. The bot code
+  never changes; only the config does.
+
+## Boxing options
+
+Everything below is a `box:` block on the deployment.
+
+Only hand the app the keys it needs (the channel's `DISCORD_TOKEN` is withheld
+automatically):
+
+```yaml
+box:
+  env: [GEMINI_API_KEY]
+```
+
+Jail it in an OS sandbox (macOS seatbelt / Linux bubblewrap). This guards
+against accidents; it is not containment for hostile code:
+
+```yaml
+box:
+  env: [GEMINI_API_KEY]
+  runner: { type: exec, isolate: local }
+```
+
+One box per Discord conversation, reclaimed when idle. The agent's
+`FileSessionStore` keeps history on disk, so a reclaimed conversation picks up
+where it left off:
+
+```yaml
+box:
+  route: session
+  idle: 10m
+```
+
+Run it in a container with no internet access except what you allow (needs
+podman or docker; build the app first so `lib/` exists, and prime a
+Linux `node_modules` volume as described in the `@genkit-ai/box` README):
+
+```yaml
+box:
+  env: [GEMINI_API_KEY]
+  runner:
+    type: podman
+    image: node:22-slim
+    network: bridge        # the agent calls Gemini, so it needs egress
+    modulesVolume: discord-agent-modules
+    extraArgs: ['--memory=512m']
+```
 
 ## Deploy to Cloud Run
 

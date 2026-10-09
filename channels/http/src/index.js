@@ -15,171 +15,159 @@
  */
 
 /**
- * HTTP channel entry point.
+ * HTTP channel entry point (plain JS; see http-ts for the TypeScript variant).
  *
- * Runs the user's Genkit app as a child process, discovers its actions over
- * reflection v2, and exposes each flow/agent as an HTTP endpoint. There is no
- * codegen and no import of user code: routing is built at runtime from
- * `listActions`, so the same channel works against a JS, Go, or Python app.
+ * Exposes each flow and agent the deployment lists in `expose` as a POST
+ * endpoint:
  *
- * The heavy lifting (reading channel.config.json, spawning the app, speaking
- * reflection v2) lives in the genkit-channels helper library; a channel only
- * maps a transport onto the discovered actions.
+ *   POST /<flow>    { "data": <input> }               -> { "result": <output> }
+ *   POST /<agent>   { "message": "hi", "sessionId"? } -> { "result": { text, sessionId, ... } }
+ *
+ * Add `?stream=true` for newline-delimited JSON chunks followed by a final
+ * `{ "result": ... }` line.
+ *
+ * Routes come from config, not discovery: the app runs in a box that may not
+ * be running yet, so the channel never asks it what it has.
  */
 
 import express from 'express';
-import { startAppProcess } from 'genkit-channels';
-
-/**
- * Derives an HTTP route + short name from an action key. Keys look like
- * `/flow/<name>` or `/agent/<name>` (possibly namespaced). We only expose
- * flows and agents.
- */
-function routeForAction(key) {
-  const m = /^\/(flow|agent)\/(.+)$/.exec(key);
-  if (!m) return null;
-  const kind = m[1];
-  const name = m[2];
-  return { kind, name, path: `/${name}` };
-}
-
-/** Applies the optional expose filter. */
-function shouldExpose(route, expose) {
-  const agents = expose.agents || [];
-  const flows = expose.flows || [];
-  if (agents.length === 0 && flows.length === 0) return true;
-  if (route.kind === 'agent') return agents.includes(route.name);
-  if (route.kind === 'flow') return flows.includes(route.name);
-  return false;
-}
+import { initChannel } from 'genkit-channels';
 
 async function main() {
-  // The framework reads channel.config.json for us: managed vs attached mode,
-  // how to spawn the child, and the ready timeout. Starting is synchronous.
-  const app = startAppProcess();
-  const { expose } = await app.getConfig();
-
-  // Readiness gate. In attached (sidecar) mode we must start the HTTP ingress
-  // immediately so the platform's startup probe and dependsOn ordering work,
-  // but we return 503 until the app has connected and we have discovered its
-  // actions. In managed mode we could block first, but using the same gate
-  // keeps one code path and improves cold-start behavior.
-  let ready = false;
-  let routes = [];
+  const channel = initChannel();
+  const routes = new Map();
+  for (const name of channel.expose.flows) {
+    routes.set(`/${name}`, { kind: 'flow', name });
+  }
+  for (const name of channel.expose.agents) {
+    routes.set(`/${name}`, { kind: 'agent', name });
+  }
+  if (routes.size === 0) {
+    console.error(
+      '[channel:http] nothing to expose; list agents/flows under `expose` ' +
+        'in channels.yaml.'
+    );
+    process.exit(1);
+  }
 
   const server = express();
   server.use(express.json({ limit: '10mb' }));
 
-  // Health/readiness endpoint. 200 once ready, 503 while starting up.
   server.get('/', (_req, res) => {
-    if (!ready) {
-      res.status(503).json({ status: 'starting' });
-      return;
-    }
     res.json({
       status: 'ok',
-      endpoints: routes.map((r) => ({ path: r.path, kind: r.kind })),
+      endpoints: [...routes].map(([path, r]) => ({ path, kind: r.kind })),
     });
   });
 
-  // A single dynamic POST handler dispatches to the discovered route so we do
-  // not need to register routes before the app connects.
   server.post(/.*/, async (req, res) => {
-    if (!ready) {
-      res.status(503).json({ error: { message: 'channel starting up' } });
-      return;
-    }
-    const route = routes.find((r) => r.path === req.path);
+    const route = routes.get(req.path);
     if (!route) {
       res.status(404).json({ error: { message: `no route ${req.path}` } });
       return;
     }
-    await handleAction(app, route, req, res);
+    // A client disconnect cancels the action in the box.
+    const ac = new AbortController();
+    res.on('close', () => {
+      if (!res.writableFinished) ac.abort();
+    });
+    const stream = req.query.stream === 'true' || req.query.stream === '1';
+    try {
+      if (route.kind === 'flow') {
+        await handleFlow(channel, route.name, req, res, stream, ac.signal);
+      } else {
+        await handleAgent(channel, route.name, req, res, stream, ac.signal);
+      }
+    } catch (e) {
+      sendError(res, e);
+    }
   });
 
   const port = Number(process.env.PORT) || 8080;
   const httpServer = server.listen(port, () => {
-    console.log(
-      `[channel:http] listening on :${port} (waiting for app to register)`
-    );
-  });
-
-  // Wait for the app to connect + register, then discover actions.
-  try {
-    const actions = await app.listActions();
-    routes = [];
-    for (const key of Object.keys(actions)) {
-      const route = routeForAction(key);
-      if (route && shouldExpose(route, expose)) {
-        routes.push({ ...route, key });
-      }
+    console.log(`[channel:http] listening on :${port}`);
+    for (const [path, r] of routes) {
+      console.log(`  POST ${path}  -> ${r.kind} ${r.name}`);
     }
-    ready = true;
-    console.log(`[channel:http] ready (${routes.length} endpoint(s))`);
-    for (const r of routes) console.log(`  POST ${r.path}  -> ${r.key}`);
-  } catch (e) {
-    console.error(`[channel:http] ${e.message}`);
-    await app.stop();
-    process.exit(1);
-  }
+  });
 
   const shutdown = async (signal) => {
     console.log(`[channel:http] ${signal} received, shutting down`);
     httpServer.close();
-    await app.stop(signal);
+    await channel.close();
     process.exit(0);
   };
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));
 }
 
-/** Runs a discovered action for an HTTP request, streaming when asked. */
-async function handleAction(app, route, req, res) {
-  const wantStream = req.query.stream === 'true' || req.query.stream === '1';
-
-  // Map client disconnect to action cancellation.
-  let traceId;
-  req.on('close', () => {
-    if (traceId && !res.writableEnded) app.cancelAction(traceId);
-  });
-
-  try {
-    if (wantStream) {
-      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-      res.setHeader('Transfer-Encoding', 'chunked');
-      const { result } = await app.runAction({
-        key: route.key,
-        input: req.body?.data ?? req.body,
-        onChunk: (chunk) => {
-          res.write(JSON.stringify(chunk) + '\n');
-        },
-        onTraceId: (tid) => {
-          traceId = tid;
-        },
-      });
-      res.write(JSON.stringify({ result }) + '\n');
-      res.end();
-    } else {
-      const { result } = await app.runAction({
-        key: route.key,
-        input: req.body?.data ?? req.body,
-        onTraceId: (tid) => {
-          traceId = tid;
-        },
-      });
-      res.json({ result });
-    }
-  } catch (e) {
-    const status = e?.data?.code === 3 ? 400 : 500;
-    if (!res.headersSent) {
-      res.status(status).json({ error: { message: e.message } });
-    } else if (!res.writableEnded) {
-      res.write(JSON.stringify({ error: { message: e.message } }) + '\n');
-      res.end();
-    }
+async function handleFlow(channel, name, req, res, stream, abortSignal) {
+  const flow = channel.flow(name);
+  const input = req.body?.data ?? req.body;
+  if (!stream) {
+    const { result } = await flow.run(input, { abortSignal });
+    res.json({ result });
+    return;
   }
+  startStream(res);
+  const { stream: chunks, output } = flow.stream(input, { abortSignal });
+  for await (const chunk of chunks) res.write(JSON.stringify(chunk) + '\n');
+  res.end(JSON.stringify({ result: await output }) + '\n');
 }
 
+/**
+ * One agent turn. Server-managed agents continue a conversation by
+ * `sessionId`; client-managed agents expect the caller to send back the
+ * `state` from the previous response.
+ */
+async function handleAgent(channel, name, req, res, stream, abortSignal) {
+  const body = req.body ?? {};
+  if (typeof body.message !== 'string' || !body.message) {
+    res
+      .status(400)
+      .json({ error: { message: '`message` (string) is required' } });
+    return;
+  }
+  const agent = channel.agent(name);
+  const chat =
+    channel.agentState(name) === 'client'
+      ? agent.chat(body.state ? { state: body.state } : undefined)
+      : agent.chat(body.sessionId ? { sessionId: body.sessionId } : undefined);
+
+  const turn = chat.sendStream(body.message, { abortSignal });
+  if (stream) {
+    startStream(res);
+    for await (const chunk of turn.stream) {
+      if (chunk.text) res.write(JSON.stringify({ text: chunk.text }) + '\n');
+    }
+  }
+  const response = await turn.response;
+  const result = {
+    text: response.text,
+    finishReason: response.finishReason,
+    sessionId: response.sessionId,
+    snapshotId: response.snapshotId,
+    state: response.raw.state,
+  };
+  if (stream) res.end(JSON.stringify({ result }) + '\n');
+  else res.json({ result });
+}
+
+function startStream(res) {
+  res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
+  res.setHeader('Transfer-Encoding', 'chunked');
+}
+
+function sendError(res, e) {
+  const message = e?.message ?? String(e);
+  // Reflection reports invalid input as status INVALID_ARGUMENT (code 3).
+  const status = e?.data?.code === 3 ? 400 : 500;
+  if (!res.headersSent) {
+    res.status(status).json({ error: { message } });
+  } else if (!res.writableEnded) {
+    res.end(JSON.stringify({ error: { message } }) + '\n');
+  }
+}
 
 main().catch((e) => {
   console.error('[channel:http] fatal', e);

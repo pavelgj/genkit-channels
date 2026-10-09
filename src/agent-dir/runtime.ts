@@ -18,8 +18,8 @@
  * The built-in agent-dir runtime: a headless Genkit app the framework spawns
  * when a deployment declares no `runtime` of its own. It is deliberately tiny.
  * It calls {@link loadAgentDir} (default middleware + auto model providers + the
- * agent folder), then idles so the reflection v2 client can connect back to the
- * channel, exactly like any hand-written user runtime.
+ * agent folder), then idles so the channel's box can drive it over reflection,
+ * exactly like any hand-written user runtime.
  *
  * The agents directory and default model come from env the compose step sets
  * (`GENKIT_AGENTS_DIR`, `GENKIT_AGENTS_MODEL`), defaulting to `./agents` and the
@@ -31,8 +31,8 @@ import { loadAgentDir } from './load';
 const dir = process.env.GENKIT_AGENTS_DIR || undefined;
 const defaultModel = process.env.GENKIT_AGENTS_MODEL || undefined;
 
-// Constructing the instance registers the agents and (in dev env) starts the
-// reflection v2 client that dials GENKIT_REFLECTION_V2_SERVER.
+// Constructing the instance registers the agents and starts reflection (the
+// box runner turns it on via GENKIT_REFLECTION_ENABLED).
 loadAgentDir({ dir, defaultModel });
 
 console.log(
@@ -40,5 +40,5 @@ console.log(
     `${defaultModel ? `, model: ${defaultModel}` : ''})`
 );
 
-// Stay alive (headless): the channel drives us over reflection v2.
+// Stay alive (headless): the channel drives us over reflection.
 setInterval(() => {}, 1 << 30);

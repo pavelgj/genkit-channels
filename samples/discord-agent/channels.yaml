@@ -17,11 +17,30 @@ deployments:
       command: node
       args: [lib/index.js]
     expose:
-      # The agent the Discord bot drives. With a single agent defined you can
-      # omit this and the channel will pick it automatically.
+      # The agent the Discord bot drives. Channels don't discover agents at
+      # runtime (the app may not be running yet), so name it here.
       agent: weatherAgent
+      # weatherAgent has a session store, so it is server-managed (the default).
+      # Use `client` for agents without a store.
+      agentState:
+        weatherAgent: server
     # Channel-specific options (all optional). See channels/discord/channel.yaml.
     with:
       # 'thread' (default) keeps a separate conversation per thread/DM;
       # 'channel' shares one conversation per channel.
       session: thread
+    # How the app runs (all optional; @genkit-ai/box). The default is one local
+    # subprocess, started on the first message.
+    box:
+      # Only these env vars reach the app. The channel's own DISCORD_TOKEN is
+      # kept out of the box regardless.
+      env: [GEMINI_API_KEY]
+      # Uncomment to jail the app in an OS sandbox (seatbelt on macOS,
+      # bubblewrap on Linux). Dev-time guardrail, not containment.
+      # runner:
+      #   type: exec
+      #   isolate: local
+      # Uncomment for one box per Discord conversation, reclaimed after 10 idle
+      # minutes. History survives reclaim because .snapshots is on disk.
+      # route: session
+      # idle: 10m

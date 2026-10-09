@@ -53,5 +53,5 @@ ai.defineTool(
 
 console.log('[weather] custom agent-dir runtime up');
 
-// Stay alive (headless): the channel drives us over reflection v2.
+// Stay alive (headless): the channel drives us over reflection.
 setInterval(() => {}, 1 << 30);

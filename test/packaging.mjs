@@ -15,9 +15,8 @@
  */
 
 /**
- * Renders the packaging artifacts (Dockerfiles) for every combination of
- * channel language (node|go) and user runtime (js|go|python), for both
- * packagings, and asserts a few invariants. This is a fast, container-free check
+ * Renders the packaging artifacts (Dockerfiles) for every user runtime
+ * (js|go|python), for both packagings, and asserts a few invariants. This is a fast, container-free check
  * that the shared packaging helpers produce coherent Dockerfiles after the
  * refactor. Run after `pnpm build`:
  *
@@ -31,6 +30,7 @@ import {
   renderUserDockerfile,
 } from '../dist/core/packaging/sidecar.js';
 import { getRuntimeBuilder } from '../dist/core/runtimes/index.js';
+import { renderServiceYaml } from '../dist/core/targets/cloud-run.js';
 
 let failures = 0;
 function check(name, cond) {
@@ -41,26 +41,18 @@ function check(name, cond) {
   }
 }
 
-function fakeChannelDef(language) {
-  return language === 'go'
-    ? {
-        name: 'http-go',
-        language: 'go',
-        entry: 'bin/app',
-        build: 'go build -o bin/app .',
-        dir: '/tmp/http-go',
-      }
-    : {
-        name: 'http',
-        language: 'node',
-        entry: 'src/index.js',
-        dir: '/tmp/http',
-      };
+function fakeChannelDef() {
+  return {
+    name: 'http',
+    language: 'node',
+    entry: 'src/index.js',
+    dir: '/tmp/http',
+  };
 }
 
-function fakePlan(channelLang, userLang) {
+function fakePlan(userLang) {
   const runtime = getRuntimeBuilder(userLang).resolve({ language: userLang });
-  const def = fakeChannelDef(channelLang);
+  const def = fakeChannelDef();
   return {
     stagingDir: '/tmp/staging',
     runtime,
@@ -73,37 +65,30 @@ function fakePlan(channelLang, userLang) {
     config: {},
     env: [],
     writeChannelConfig() {},
-    managedConfig: {},
+    channelConfig: {},
+    channelConfigFor: () => ({}),
   };
 }
 
-const channelLangs = ['node', 'go'];
 const userLangs = ['js', 'go', 'python'];
 
-for (const cl of channelLangs) {
-  for (const ul of userLangs) {
-    const plan = fakePlan(cl, ul);
-    const single = renderSingleContainerDockerfile(plan);
+for (const ul of userLangs) {
+  const plan = fakePlan(ul);
+  const single = renderSingleContainerDockerfile(plan);
 
-    check(`[single ${cl}/${ul}] has a final runtime stage`, single.includes('AS runtime'));
-    check(`[single ${cl}/${ul}] copies channel.config.json`, single.includes('channel.config.json'));
-    if (cl === 'go') {
-      check(`[single ${cl}/${ul}] builds the channel binary`, single.includes('AS channelbuild'));
-      check(`[single ${cl}/${ul}] CMD runs the channel binary`, single.includes('/app/channel/bin/app'));
-    } else {
-      check(`[single ${cl}/${ul}] installs channel npm deps`, single.includes('npm install'));
-      check(`[single ${cl}/${ul}] CMD runs node entry`, single.includes('/app/channel/src/index.js'));
-    }
-    if (ul === 'python' && cl === 'node') {
-      check(`[single ${cl}/${ul}] installs python runtime on node base`, single.includes('python3'));
-    }
-
-    const chDf = renderChannelDockerfile(plan);
-    const usDf = renderUserDockerfile(plan);
-    check(`[sidecar ${cl}/${ul}] channel image has no user copy`, !chDf.includes('COPY user/'));
-    check(`[sidecar ${cl}/${ul}] user image has no channel copy`, !usDf.includes('COPY channel/'));
-    check(`[sidecar ${cl}/${ul}] channel image exposes ingress`, chDf.includes('EXPOSE 8080'));
+  check(`[single ${ul}] has a final runtime stage`, single.includes('AS runtime'));
+  check(`[single ${ul}] copies channel.config.json`, single.includes('channel.config.json'));
+  check(`[single ${ul}] installs channel npm deps`, single.includes('npm install'));
+  check(`[single ${ul}] CMD runs node entry`, single.includes('/app/channel/src/index.js'));
+  if (ul === 'python') {
+    check(`[single ${ul}] installs python runtime on node base`, single.includes('python3'));
   }
+
+  const chDf = renderChannelDockerfile(plan);
+  const usDf = renderUserDockerfile(plan);
+  check(`[sidecar ${ul}] channel image has no user copy`, !chDf.includes('COPY user/'));
+  check(`[sidecar ${ul}] user image has no channel copy`, !usDf.includes('COPY channel/'));
+  check(`[sidecar ${ul}] channel image exposes ingress`, chDf.includes('EXPOSE 8080'));
 }
 
 // A Node channel that declares a `build` (e.g. a TypeScript channel) must use
@@ -130,6 +115,26 @@ for (const cl of channelLangs) {
     '[node-build] runs the compiled entry',
     plan.runCommand.join(' ').includes('/app/channel/dist/index.js')
   );
+}
+
+// Cloud Run sidecar: the app serves reflection on loopback (no dev mode), and
+// both containers share the reflection secret.
+{
+  const yaml = renderServiceYaml({
+    service: 'svc',
+    channelImage: 'img/channel',
+    userImage: 'img/app',
+    reflectionSecret: 's3cret',
+    userEnv: [],
+    settings: { access: 'private', cpu: 'request-only' },
+  });
+  check('[sidecar yaml] enables reflection without dev mode', yaml.includes('GENKIT_REFLECTION_ENABLED') && !yaml.includes('GENKIT_ENV'));
+  check('[sidecar yaml] pins the reflection port', yaml.includes('GENKIT_REFLECTION_PORT'));
+  check(
+    '[sidecar yaml] both containers get the secret',
+    yaml.split('GENKIT_REFLECTION_SECRET_TOKEN').length - 1 === 2
+  );
+  check('[sidecar yaml] app no longer dials the channel', !yaml.includes('GENKIT_REFLECTION_V2_SERVER'));
 }
 
 if (failures > 0) {

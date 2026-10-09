@@ -17,32 +17,35 @@
 /**
  * genkit-channels: public library surface.
  *
- * Channel authors call {@link startAppProcess} to run a Genkit app as a child
- * process and talk to it over reflection v2, then map a transport (HTTP, Slack,
- * Discord, ...) onto its discovered actions. The returned {@link AppProcess}
- * self-configures from the framework's `channel.config.json` and exposes
- * `getConfig`, `listAgents`, and `getAgent` so a channel writes almost no
- * plumbing.
+ * A channel calls {@link initChannel} to reach the user's Genkit app, which
+ * runs in a box (`@genkit-ai/box`) as configured in `channels.yaml`. It then
+ * maps a transport (HTTP, Slack, Discord, ...) onto the agents and flows the
+ * deployment exposes.
  */
 
 export {
-  AppProcess,
-  startAppProcess,
-  type ChannelConfig,
-  type ChildSpec,
-  type RunActionParams,
-  type RunActionResult,
-  type StartAppProcessOptions,
-} from './lib/app-process';
+  initChannel,
+  type Channel,
+  type InitChannelOptions,
+} from './lib/channel';
 
 export {
-  createAgentApi,
-  discoverAgents,
-  type AgentAPI,
-  type AgentChat,
-  type AgentResponse,
-  type AgentStateManagement,
-  type AgentTurn,
-  type CreateAgentApiOptions,
-  type DiscoveredAgent,
-} from './lib/agent-client';
+  BoxConfigSchema,
+  ChannelConfigSchema,
+  type AgentState,
+  type BoxConfig,
+  type ChannelConfig,
+  type ChannelConfigInput,
+  type RunnerConfig,
+} from './lib/config';
+
+// The agent client surface, so channels can annotate against it without a
+// direct genkit/beta import.
+export type {
+  AgentAPI,
+  AgentChat,
+  AgentChunk,
+  AgentResponse,
+  AgentTurn,
+  SessionState,
+} from 'genkit/beta';

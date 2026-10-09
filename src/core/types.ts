@@ -17,10 +17,16 @@
 /**
  * Types shared across the genkit-channels implementation.
  *
- * A channel runs the user's app as a child process and talks to it over
- * reflection v2, discovering actions at runtime. It does not generate or import
- * user code.
+ * A channel reaches the user's app through `@genkit-ai/box`: the app runs in a
+ * box (subprocess, sandbox, container, or remote runtime) and the channel
+ * drives it through proxies. No user code is generated or imported.
  */
+
+import type {
+  AgentState,
+  BoxConfig,
+  ChannelConfigInput,
+} from '../lib/config';
 
 /**
  * A channel name is a free-form string mapping to a directory under
@@ -40,18 +46,19 @@ export type TargetName = string;
 export type RuntimeLanguage = 'js' | 'go' | 'python';
 
 /**
- * The language a channel itself is written in. Channels are compiled/run
- * differently (Node runs source; Go ships a static binary), which drives how the
- * channel's own container image is built.
+ * The language a channel itself is written in. Node only for now: channels build
+ * on `initChannel` / `@genkit-ai/box`, which are JS. Kept as a field so other
+ * languages can return once box has ports.
  */
-export type ChannelLanguage = 'node' | 'go';
+export type ChannelLanguage = 'node';
 
 /**
  * How a composed artifact is packaged for a target.
- *  - `single-container`: one image runs the channel, which spawns the user app
- *    as a child (managed mode). Self-contained, uses buildpacks/`--source`.
+ *  - `single-container`: one image runs the channel, which boxes the user app
+ *    as a local subprocess. Self-contained, uses buildpacks/`--source`.
  *  - `sidecar`: two images (channel + user app) run as sibling containers; the
- *    app dials the channel over loopback (attached mode). Better isolation.
+ *    channel calls the app's loopback reflection server (remote box runner).
+ *    Better isolation.
  */
 export type PackagingName = 'single-container' | 'sidecar';
 
@@ -108,13 +115,21 @@ export interface ResolvedServiceSettings {
 }
 
 
-/** Which discovered actions to expose through the channel (runtime filter). */
+/**
+ * Which agents and flows the channel exposes. This is the source of truth for
+ * what the app offers: channels don't discover actions at serve time, since a
+ * boxed app may not be running yet.
+ */
 export interface ExposeConfig {
-
   /** Convenience for a single agent (equivalent to `agents: [name]`). */
   agent?: string;
   agents?: string[];
   flows?: string[];
+  /**
+   * State ownership per agent: `server` (has a session store; the default) or
+   * `client` (the caller round-trips the state).
+   */
+  agentState?: Record<string, AgentState>;
 }
 
 /**
@@ -167,8 +182,14 @@ export interface DeploymentManifest {
    */
   agents?: AgentDirConfig;
 
-  /** Which discovered actions to expose (default: all). */
+  /** Which agents and flows the channel exposes. */
   expose?: ExposeConfig;
+  /**
+   * How the app is boxed: runner (exec, podman, remote), isolation, routing,
+   * idle retention, env allowlist. Optional; the default is one long-lived
+   * local subprocess running `runtime`.
+   */
+  box?: BoxConfig;
   /** Where to run it. */
   target?: TargetName;
   /**
@@ -221,9 +242,9 @@ export interface ChannelRule {
 }
 
 /**
- * How to build a channel's own container image. Declared per channel because a
- * Node channel runs source with an `npm install`, while a Go channel compiles to
- * a static binary. This is the channel-side analog of {@link DockerfilePlan}.
+ * How to build a channel's own container image: run the copied source after
+ * `npm install`, or after the channel's declared `build`. The channel-side
+ * analog of {@link DockerfilePlan}.
  */
 export interface ChannelBuildPlan {
   /** The language the channel is written in. */
@@ -234,24 +255,18 @@ export interface ChannelBuildPlan {
    */
   runtimeImage: string;
   /**
-   * Base image for a build stage, when the channel must be compiled (Go). Omit
-   * for interpreted channels (Node) that run their copied source directly.
-   */
-  builderImage?: string;
-  /**
    * Shell commands (Dockerfile RUN lines, without the `RUN` keyword) that build
-   * the channel. For Node: `npm install --omit=dev` in the channel dir. For Go:
-   * `go build -o ...` in the build stage.
+   * the channel, e.g. `npm install --omit=dev` in the channel dir.
    */
   buildSteps: string[];
   /**
    * The command (argv) that launches the channel inside the final image, e.g.
-   * `["node", "/app/channel/src/index.js"]` or `["/app/channel/bin/app"]`.
+   * `["node", "/app/channel/src/index.js"]`.
    */
   runCommand: string[];
 }
 
-/** Parsed channel.yaml. Channels may be written in Node or Go. */
+/** Parsed channel.yaml (the channel manifest). */
 export interface ChannelDefinition {
   name: string;
   description?: string;
@@ -259,14 +274,14 @@ export interface ChannelDefinition {
   /** The language the channel is implemented in (default: `node`). */
   language: ChannelLanguage;
   /**
-   * Entry to run, relative to the channel dir. For Node this is the JS entry
-   * (e.g. `src/index.js`); for Go it is the built binary (e.g. `bin/app`).
+   * JS entry to run, relative to the channel dir (e.g. `src/index.js`, or
+   * `dist/index.js` for a channel with a `build`).
    */
   entry: string;
   /**
    * Build command for the channel itself, run relative to the channel dir at
-   * image-build time (e.g. `go build -o bin/app .`). Node channels usually omit
-   * this (their `npm install` is derived from the build plan).
+   * install and image-build time (e.g. `npm install && npm run build` for
+   * TypeScript). Plain JS channels omit this (`npm install` is implied).
    */
   build?: string;
   /**
@@ -309,28 +324,6 @@ export interface ComposeContext {
   env: string[];
   /** The resolved child command/args/cwd. */
   child: { command: string; args: string[]; cwd: string };
-}
-
-/**
- * The `channel.config.json` written into the staging dir and read by the channel
- * at startup.
- *
- * In managed mode (`child` present) the channel spawns the user app on an
- * ephemeral loopback port. In attached mode (`child` omitted, `attach` present)
- * the channel binds a fixed loopback port and waits for a sidecar to dial in.
- */
-export interface ChannelRuntimeConfig {
-  /** Managed mode: how to spawn the user app as a child. */
-  child?: { command: string; args: string[]; cwd: string };
-  /**
-   * Attached mode: bind the reflection v2 WS server on this fixed loopback port
-   * and wait for a separately started app (sidecar) to connect. Mutually
-   * exclusive with `child`.
-   */
-  attach?: { port: number; host?: string };
-  expose: { agents: string[]; flows: string[] };
-  config: Record<string, unknown>;
-  readyTimeoutMs: number;
 }
 
 
@@ -399,13 +392,17 @@ export interface ComposePlan {
   /** Env var names to forward (channel env + manifest env). */
   env: string[];
   /**
-   * Rewrites `channel.config.json` in the staging dir. Targets use this to flip
-   * the channel between managed and attached mode (e.g. sidecar sets `attach`
-   * and drops `child`).
+   * Rewrites `channel.config.json` in the staging dir. Targets use this to
+   * change how the app is boxed (e.g. sidecar switches to a remote runner).
    */
-  writeChannelConfig(config: ChannelRuntimeConfig): void;
-  /** The managed-mode config compose wrote by default (child + ephemeral WS). */
-  managedConfig: ChannelRuntimeConfig;
+  writeChannelConfig(config: ChannelConfigInput): void;
+  /** The config compose wrote by default (exec runner over `user/`). */
+  channelConfig: ChannelConfigInput;
+  /**
+   * The channel config with the app located at `appDir` instead of the staged
+   * `user/` copy. `--local` uses this to run the original project in place.
+   */
+  channelConfigFor(appDir: string): ChannelConfigInput;
 }
 
 /** Context passed to a deploy target. */

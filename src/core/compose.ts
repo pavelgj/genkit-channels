@@ -28,10 +28,11 @@
  * artifacts (see `core/packaging` for shared helpers they can reuse).
  *
  * Layout produced under `.genkit/deploy/<name>/`:
- *   channel/              copy of the installed channel (Node or Go source)
+ *   channel/              copy of the installed channel
  *   user/                 copy of the user project source
- *   channel.config.json   how the channel launches + filters the app (managed
- *                         mode by default; targets may rewrite it)
+ *   channel.config.json   the resolved deployment `initChannel` reads: expose,
+ *                         options, and how the app is boxed (an exec runner
+ *                         over `user/` by default; targets may rewrite it)
  */
 
 import fs from 'fs';
@@ -45,8 +46,12 @@ import {
   resolveAgentDirRuntime,
   synthesizeAgentDirApp,
 } from './runtimes/agent-dir';
+import {
+  CHANNEL_CONFIG_FILENAME,
+  type ChannelConfigInput,
+} from '../lib/config';
+import { buildChannelConfig } from './channel-config';
 import type {
-  ChannelRuntimeConfig,
   ComposeContext,
   ComposePlan,
   DeploymentManifest,
@@ -138,22 +143,21 @@ export async function compose(
   }
 
 
-  // 3) Write the default (managed-mode) channel.config.json. The channel
-  // resolves child.cwd relative to this file, so point it at the copied user
-  // dir. Targets may rewrite this via ComposePlan.writeChannelConfig (e.g. to
-  // switch to attached mode for sidecar packaging).
-  const configPath = path.join(stagingDir, 'channel.config.json');
-  const managedConfig: ChannelRuntimeConfig = {
-    child: {
-      command: runtime.command,
-      args: runtime.args,
-      cwd: path.join('user', runtime.cwd),
-    },
-    expose,
-    config: deployment.with ?? {},
-    readyTimeoutMs: 30000,
-  };
-  writeChannelConfig(managedConfig);
+  // 3) Write the resolved channel.config.json. Relative paths in it resolve
+  // against the file's dir, so the app points at the copied `user/` dir.
+  // Targets may rewrite it via ComposePlan.writeChannelConfig (e.g. sidecar
+  // packaging switches to a remote runner).
+  const configPath = path.join(stagingDir, CHANNEL_CONFIG_FILENAME);
+  const channelConfigFor = (appDir: string): ChannelConfigInput =>
+    buildChannelConfig({
+      deployment,
+      runtime,
+      expose,
+      channelEnv: channel.env ?? [],
+      appDir,
+    });
+  const channelConfig = channelConfigFor('user');
+  writeChannelConfig(channelConfig);
 
   logger.info(
     `Composed ${deployment.channel} (${channel.language}) channel + ` +
@@ -162,7 +166,7 @@ export async function compose(
   );
 
 
-  function writeChannelConfig(config: ChannelRuntimeConfig): void {
+  function writeChannelConfig(config: ChannelConfigInput): void {
     fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n');
   }
 
@@ -180,7 +184,8 @@ export async function compose(
     config: deployment.with ?? {},
     env,
     writeChannelConfig,
-    managedConfig,
+    channelConfig,
+    channelConfigFor,
   };
 }
 

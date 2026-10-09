@@ -23,9 +23,9 @@
  *
  *  - sidecar: build + push two images (channel + user app) and apply a
  *    multi-container `service.yaml` with `gcloud run services replace`. The
- *    channel is the ingress container in attached mode; the user app dials it
- *    over loopback. This path needs Cloud Build (or local Docker) and an
- *    Artifact Registry repo.
+ *    channel is the ingress container; the user app serves v1 reflection on
+ *    loopback and the channel reaches it with a remote box runner. This path
+ *    needs Cloud Build (or local Docker) and an Artifact Registry repo.
  *
  * Service settings (access, cpu, scaling, memory) come pre-resolved on the
  * context (user values over channel recommendations over secure defaults) and
@@ -39,23 +39,24 @@
  */
 
 import { spawn, spawnSync } from 'child_process';
+import { randomBytes } from 'crypto';
 import fs from 'fs';
 import path from 'path';
+import type { ChannelConfigInput } from '../../lib/config';
 import { renderSingleContainerDockerfile } from '../packaging/single-container';
 import {
   renderChannelDockerfile,
   renderUserDockerfile,
 } from '../packaging/sidecar';
 import type {
-  ChannelRuntimeConfig,
   DeployTarget,
   DeployTargetContext,
   ResolvedServiceSettings,
 } from '../types';
 import { logger } from '../../util/logger';
 
-/** Fixed loopback port the channel binds in attached (sidecar) mode. */
-const ATTACH_PORT = 8081;
+/** Loopback port the app container serves v1 reflection on (sidecar). */
+const REFLECTION_PORT = 3100;
 
 export const cloudRunTarget: DeployTarget = {
   name: 'cloud-run',
@@ -94,10 +95,10 @@ async function deploySingleContainer(
 ): Promise<{ url?: string }> {
   const { deployment, plan, serviceSettings, execute } = ctx;
 
-  // The channel runs in managed mode here (it spawns the child). compose wrote
-  // that config by default, but make it explicit in case a prior step changed
-  // it.
-  plan.writeChannelConfig(plan.managedConfig);
+  // The channel boxes the app as a local subprocess in the same container.
+  // compose wrote that config by default; rewrite it in case a prior step
+  // changed it.
+  plan.writeChannelConfig(plan.channelConfig);
 
   // Write the shared multi-stage Dockerfile + .dockerignore.
   fs.writeFileSync(
@@ -135,12 +136,11 @@ async function deploySingleContainer(
 /**
  * sidecar: build + push two images and apply a multi-container service.yaml.
  *
- * Container start ordering matters because the reflection v2 client's initial
- * dial does not retry: the channel (WS server) must be up before the app tries
- * to connect. We express this with a `dependsOn` from the app container to the
- * channel container, plus a startup probe on the channel's ingress port. The
- * channel serves 503 until the app registers, so the probe gates traffic
- * correctly without deadlocking.
+ * The app container serves v1 reflection on loopback (`GENKIT_REFLECTION_PORT`)
+ * and the channel calls into it through a remote runner, so neither side dials
+ * the other at startup and no start ordering is needed. The remote runner waits
+ * for the app's health endpoint before the first call. Both containers share a
+ * reflection secret generated per deploy.
  */
 async function deploySidecar(
   ctx: DeployTargetContext
@@ -152,15 +152,20 @@ async function deploySidecar(
   const userImage = `${repo}/${tag}-app:latest`;
   const service = deployment.serviceName || deployment.name;
 
-  // Flip the channel to attached mode on a fixed loopback port and drop the
-  // managed-mode child (the app runs in its own container now).
-  const attachedConfig: ChannelRuntimeConfig = {
-    attach: { port: ATTACH_PORT, host: '0.0.0.0' },
-    expose: plan.expose,
-    config: plan.config,
-    readyTimeoutMs: 30000,
+  // The app runs in its own container and serves v1 reflection on loopback;
+  // the channel reaches it with a remote runner. Routing/retention don't
+  // apply to a runtime the channel doesn't own, so only `runner` changes.
+  const sidecarConfig: ChannelConfigInput = {
+    ...plan.channelConfig,
+    box: {
+      ...plan.channelConfig.box,
+      runner: { type: 'remote', url: `http://127.0.0.1:${REFLECTION_PORT}` },
+      route: 'app',
+    },
   };
-  plan.writeChannelConfig(attachedConfig);
+  plan.writeChannelConfig(sidecarConfig);
+  // Shared by both containers: the app requires it on every reflection call.
+  const reflectionSecret = randomBytes(32).toString('base64url');
 
   // Write the two Dockerfiles into the staging dir.
   const channelDf = path.join(plan.stagingDir, 'Dockerfile.channel');
@@ -177,7 +182,7 @@ async function deploySidecar(
     service,
     channelImage,
     userImage,
-    attachPort: ATTACH_PORT,
+    reflectionSecret,
     userEnv: deployment.env ?? [],
     settings: serviceSettings,
   });
@@ -291,41 +296,44 @@ function iamBindingArgs(
 /**
  * Renders a Cloud Run multi-container service spec (Knative Service). The
  * channel is the ingress container (has the `ports` entry); the user app is a
- * sidecar with no ports. The app depends on the channel so it starts second,
- * and the channel has a startup probe on its ingress port.
+ * sidecar serving reflection on loopback only.
  *
  * Service settings map to template annotations (CPU throttling, autoscaling
  * min/max), containerConcurrency, and the channel container's memory limit.
  * Access (public/private) is applied out of band via an IAM binding, not here.
  */
-function renderServiceYaml(opts: {
+export function renderServiceYaml(opts: {
   service: string;
   channelImage: string;
   userImage: string;
-  attachPort: number;
+  reflectionSecret: string;
   userEnv: string[];
   settings: ResolvedServiceSettings;
 }): string {
-  const { service, channelImage, userImage, attachPort, userEnv, settings } =
+  const { service, channelImage, userImage, reflectionSecret, userEnv, settings } =
     opts;
+
+  const envLine = (name: string, value: string) =>
+    `            - name: ${name}\n              value: ${jsonString(value)}`;
 
   // Env forwarded to the user app container (values come from the deploy env).
   const userEnvLines = userEnv
     .filter((k) => process.env[k] !== undefined)
-    .map((k) => `            - name: ${k}\n              value: ${jsonString(process.env[k]!)}`)
-    .join('\n');
+    .map((k) => envLine(k, process.env[k]!));
 
-  // The user app must run in dev mode so the reflection v2 client activates,
-  // and must dial the channel's attached WS port on loopback.
-  const appEnv =
-    `            - name: GENKIT_ENV\n              value: "dev"\n` +
-    `            - name: GENKIT_REFLECTION_V2_SERVER\n` +
-    `              value: "ws://localhost:${attachPort}"` +
-    (userEnvLines ? `\n${userEnvLines}` : '');
+  // Reflection on without GENKIT_ENV=dev (production defaults), bound to a
+  // fixed loopback port and guarded by the shared secret. TODO: move the secret
+  // to Secret Manager instead of a plain env value in the spec.
+  const appEnv = [
+    envLine('GENKIT_REFLECTION_ENABLED', 'true'),
+    envLine('GENKIT_REFLECTION_PORT', String(REFLECTION_PORT)),
+    envLine('GENKIT_REFLECTION_SECRET_TOKEN', reflectionSecret),
+    ...userEnvLines,
+  ].join('\n');
+  const channelEnv = envLine('GENKIT_REFLECTION_SECRET_TOKEN', reflectionSecret);
 
   // Template annotations: CPU throttling + autoscaling bounds.
   const annotations: string[] = [
-    `        run.googleapis.com/container-dependencies: '{"app":["channel"]}'`,
     `        run.googleapis.com/cpu-throttling: ${jsonString(
       settings.cpu === 'always-allocated' ? 'false' : 'true'
     )}`,
@@ -374,8 +382,7 @@ ${concurrencyLine}      containers:
           ports:
             - containerPort: 8080
 ${channelResources}          env:
-            - name: GENKIT_CHANNEL_ATTACH_PORT
-              value: "${attachPort}"
+${channelEnv}
           startupProbe:
             httpGet:
               path: /

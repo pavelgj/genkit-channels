@@ -8,7 +8,7 @@
     "node": ">=20"
   },
   "dependencies": {
-    "genkit": "^1.41.0",
+    "genkit": "^1.43.0-rc.1",
     "genkit-channels": "^0.1.0"
   }
 }

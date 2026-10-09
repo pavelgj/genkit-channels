@@ -16,10 +16,16 @@
 
 /**
  * A minimal fake Genkit runtime: the *client* half of reflection v2. It stands
- * in for a real app (JS/Go/Python) so the channel + app-process helper can be
- * exercised without building the full framework. It connects to
- * GENKIT_REFLECTION_V2_SERVER, registers, answers listActions, and echoes
- * runAction (with streaming).
+ * in for a real app (JS/Go/Python) so channels can be exercised without the
+ * full framework. Speaks the same contract a real runtime does under a box
+ * exec runner: dials GENKIT_REFLECTION_V2_SERVER, registers with
+ * GENKIT_RUNTIME_ID and GENKIT_REFLECTION_SECRET_TOKEN, answers listActions,
+ * and echoes runAction (with streaming).
+ *
+ * Test hooks:
+ *  - `/flow/probe` returns this process's pid, the names of a few env vars it
+ *    can see, and how many listActions calls it has served.
+ *  - FAKE_AGENT_STATE=client makes echoAgent client-managed.
  */
 
 import WebSocket from 'ws';
@@ -34,8 +40,11 @@ if (!url) {
 // the FAKE_AGENT_STATE env var so one fake runtime exercises both paths.
 const AGENT_STATE = process.env.FAKE_AGENT_STATE === 'client' ? 'client' : 'server';
 
+let listActionsCalls = 0;
+
 const ACTIONS = {
   '/flow/echo': { key: '/flow/echo', name: 'echo' },
+  '/flow/probe': { key: '/flow/probe', name: 'probe' },
   '/agent/weatherAgent': { key: '/agent/weatherAgent', name: 'weatherAgent' },
   // An agent action carries capability metadata under `metadata.agent`, which
   // the channel's agent client reads to decide server- vs client-managed state.
@@ -65,6 +74,8 @@ const ACTIONS = {
 // A trivial in-memory session store so server-managed turns accumulate history
 // keyed by sessionId, mirroring what a real agent store does.
 const sessions = new Map();
+/** snapshotId -> sessionId, so snapshot-only resumes find their session. */
+const snapshots = new Map();
 
 /** Extracts the user's text from an AgentInput message. */
 function inputText(input) {
@@ -86,7 +97,8 @@ ws.on('open', () => {
     jsonrpc: '2.0',
     method: 'register',
     params: {
-      id: String(process.pid),
+      id: process.env.GENKIT_RUNTIME_ID || String(process.pid),
+      secret: process.env.GENKIT_REFLECTION_SECRET_TOKEN,
       pid: process.pid,
       name: 'fake-runtime',
       genkitVersion: 'fake/0.0.0',
@@ -102,6 +114,7 @@ ws.on('message', async (data) => {
   if (!('method' in msg)) return; // response to our register; ignore
 
   if (msg.method === 'listActions') {
+    listActionsCalls++;
     send({ jsonrpc: '2.0', result: { actions: ACTIONS }, id: msg.id });
     return;
   }
@@ -116,12 +129,28 @@ ws.on('message', async (data) => {
       params: { requestId: msg.id, state: { traceId } },
     });
 
+    if (key === '/flow/probe') {
+      const names = Array.isArray(input?.env) ? input.env : [];
+      send({
+        jsonrpc: '2.0',
+        result: {
+          result: {
+            pid: process.pid,
+            env: Object.fromEntries(names.map((n) => [n, n in process.env])),
+            listActionsCalls,
+          },
+          telemetry: { traceId },
+        },
+        id: msg.id,
+      });
+      return;
+    }
+
     // Agent snapshot companion: return the stored session state, if any.
     if (key === '/agent-snapshot/echoAgent') {
       const lookup = input || {};
-      const snap = lookup.sessionId
-        ? sessions.get(lookup.sessionId)
-        : undefined;
+      const sessionId = lookup.sessionId ?? snapshots.get(lookup.snapshotId);
+      const snap = sessionId ? sessions.get(sessionId) : undefined;
       send({ jsonrpc: '2.0', result: { result: snap }, id: msg.id });
       return;
     }
@@ -159,15 +188,28 @@ ws.on('message', async (data) => {
       const output = { message, finishReason: 'stop' };
       if (AGENT_STATE === 'server') {
         // Server-managed: persist history keyed by sessionId, return snapshotId.
-        const sessionId = init?.sessionId ?? init?.state?.sessionId;
-        const snapshotId = `snap-${msg.id}`;
-        const prev = (sessionId && sessions.get(sessionId)?.messages) || [];
+        // Like a real store, a resume by snapshotId alone finds its session,
+        // and a first turn without one mints a session id.
+        const sessionId =
+          init?.sessionId ??
+          snapshots.get(init?.snapshotId) ??
+          `session-${process.pid}-${msg.id}`;
+        const snapshotId = `snap-${process.pid}-${msg.id}`;
+        snapshots.set(snapshotId, sessionId);
+        const prev = sessions.get(sessionId)?.state.messages ?? [];
         const messages = [
           ...prev,
           input?.message ?? { role: 'user', content: [{ text }] },
           message,
         ];
-        if (sessionId) sessions.set(sessionId, { sessionId, messages });
+        // Same shape as a real SessionSnapshot (messages under `state`), plus
+        // the serving pid so tests can tell boxes apart.
+        sessions.set(sessionId, {
+          snapshotId,
+          sessionId,
+          state: { sessionId, messages },
+          pid: process.pid,
+        });
         output.sessionId = sessionId;
         output.snapshotId = snapshotId;
       } else {

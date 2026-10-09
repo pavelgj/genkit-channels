@@ -3,8 +3,7 @@
 A Discord bot with **no runtime code**: just a folder of agent prompts. The
 framework runs the built-in agent-dir runtime, which loads `./agents`, installs
 the default middleware (filesystem, skills, retry, ...), and registers each
-agent folder as an agent. The Discord channel discovers the agent over
-reflection v2 and runs it as a gateway bot.
+agent folder as an agent. The Discord channel runs it as a gateway bot.
 
 Compare with `../discord-agent`, which does the same thing but with a
 hand-written Genkit app. Here there is no `src/`, no `package.json`, no code, the

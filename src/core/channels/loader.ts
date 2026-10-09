@@ -16,7 +16,7 @@
 
 /**
  * Loads and validates an installed channel definition from
- * `.genkit/channels/<name>/channel.yaml`. Channels may be Node or Go programs.
+ * `.genkit/channels/<name>/channel.yaml`. Channels are Node programs.
  */
 
 import fs from 'fs';
@@ -30,7 +30,9 @@ import type {
 } from '../types';
 
 
-const KNOWN_CHANNEL_LANGUAGES: ChannelLanguage[] = ['node', 'go'];
+// Node only for now. A Go channel comes back as a clean port once there is a
+// Go genkit-in-a-box.
+const KNOWN_CHANNEL_LANGUAGES: ChannelLanguage[] = ['node'];
 
 
 export const CHANNEL_MANIFEST_FILENAME = 'channel.yaml';
@@ -110,31 +112,15 @@ function validateDefinition(
     throw new Error(`${manifestPath}: "entry" is required.`);
   }
 
-  // For a plain Node channel the entry is source that must be present. For a
-  // Node channel with a `build` (e.g. TypeScript), the entry is the compiled
-  // output, which is produced by the build step and may legitimately be absent
-  // on disk until then. For Go channels the entry is the built binary, produced
-  // during the image build (or a local `go build`), so it may also be absent; we
-  // require the Go source (a .go file) to be present instead.
-  if (language === 'node') {
-    if (!parsed.build) {
-      const entryPath = path.join(dir, parsed.entry);
-      if (!fs.existsSync(entryPath)) {
-        throw new Error(
-          `${manifestPath}: entry "${parsed.entry}" does not exist in the ` +
-            `channel. Declare a "build" that produces it, or ship the entry.`
-        );
-      }
-    }
-  } else if (language === 'go') {
-
-    const hasGoSource = fs
-      .readdirSync(dir)
-      .some((f) => f.endsWith('.go') || f === 'go.mod');
-    if (!hasGoSource) {
+  // A plain channel's entry is source that must be present. With a `build`
+  // (e.g. TypeScript), the entry is the compiled output, which may
+  // legitimately be absent until the build runs.
+  if (!parsed.build) {
+    const entryPath = path.join(dir, parsed.entry);
+    if (!fs.existsSync(entryPath)) {
       throw new Error(
-        `${manifestPath}: Go channel has no Go source (expected a go.mod / .go ` +
-          `files in ${path.relative(process.cwd(), dir)}).`
+        `${manifestPath}: entry "${parsed.entry}" does not exist in the ` +
+          `channel. Declare a "build" that produces it, or ship the entry.`
       );
     }
   }

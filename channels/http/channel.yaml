@@ -1,5 +1,5 @@
 name: http
-description: Expose a Genkit app's flows and agents over HTTP via reflection v2.
+description: Expose a Genkit app's flows and agents over HTTP.
 version: 0.1.0
 # The channel is implemented in Node (the default). Node channels run their
 # copied source directly after an `npm install`; no build step.

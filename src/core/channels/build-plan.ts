@@ -17,10 +17,9 @@
 /**
  * Derives how to build a channel's own container image from its definition.
  *
- * This is the channel-side analog of the per-language user runtime builders: it
- * is the only part of the tool that needs to know a channel is written in Node
- * vs Go. Everything downstream (packagers, targets) consumes the neutral
- * {@link ChannelBuildPlan}.
+ * Channels are Node programs (they build on `initChannel` and `@genkit-ai/box`,
+ * which are JS today). Everything downstream (packagers, targets) consumes the
+ * neutral {@link ChannelBuildPlan}.
  *
  * Conventions for the composed image layout (both packagings):
  *  - the channel is copied to `/app/channel`,
@@ -32,26 +31,16 @@ import type { ChannelBuildPlan, ChannelDefinition } from '../types';
 /** Where the channel is copied inside the image. */
 const CHANNEL_DIR = '/app/channel';
 
-/** Default base images per channel language. */
+/** Base image for the channel. */
 const NODE_RUNTIME_IMAGE = 'node:20-slim';
-const GO_BUILDER_IMAGE = 'golang:1.23';
-// Go channels compile to a static binary, so the runtime image can be tiny.
-const GO_RUNTIME_IMAGE = 'gcr.io/distroless/static-debian12';
 
 /**
- * Resolves a channel's build plan. Node channels run their copied source after
- * an `npm install`; Go channels compile to a static binary in a build stage.
+ * Resolves a channel's build plan: run the copied source after an
+ * `npm install`, or after the channel's declared `build` (e.g. TypeScript).
  */
 export function resolveChannelBuildPlan(
   def: ChannelDefinition
 ): ChannelBuildPlan {
-  if (def.language === 'go') {
-    return resolveGo(def);
-  }
-  return resolveNode(def);
-}
-
-function resolveNode(def: ChannelDefinition): ChannelBuildPlan {
   // `entry` is relative to the channel dir, e.g. `src/index.js` (plain JS) or
   // `dist/index.js` (a TypeScript channel that compiles to `dist/`).
   const entry = `${CHANNEL_DIR}/${def.entry}`;
@@ -71,23 +60,6 @@ function resolveNode(def: ChannelDefinition): ChannelBuildPlan {
   };
 }
 
-
-function resolveGo(def: ChannelDefinition): ChannelBuildPlan {
-  // `entry` points at the built binary path relative to the channel dir, e.g.
-  // `bin/app`. The build command defaults to compiling that binary.
-  const binaryRel = def.entry; // e.g. bin/app
-  const build = def.build ?? `go build -o ${binaryRel} .`;
-  return {
-    language: 'go',
-    builderImage: GO_BUILDER_IMAGE,
-    runtimeImage: GO_RUNTIME_IMAGE,
-    // Runs in the build stage, inside the copied channel source dir.
-    buildSteps: [`CGO_ENABLED=0 ${build}`],
-    // The compiled binary is copied to `${CHANNEL_DIR}/<entry>` in the final
-    // image (the packager wires up the COPY --from).
-    runCommand: [`${CHANNEL_DIR}/${binaryRel}`],
-  };
-}
 
 /** The in-image channel directory (shared with packagers). */
 export const IMAGE_CHANNEL_DIR = CHANNEL_DIR;

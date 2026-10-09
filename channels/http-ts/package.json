@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "HTTP channel for genkit-channels, written in TypeScript: exposes a Genkit app's flows/agents over HTTP via reflection v2.",
+  "description": "HTTP channel for genkit-channels, written in TypeScript: exposes a Genkit app's flows/agents over HTTP.",
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",

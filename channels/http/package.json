@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "HTTP channel for genkit-channels: exposes a Genkit app's flows/agents over HTTP via reflection v2.",
+  "description": "HTTP channel for genkit-channels: exposes a Genkit app's flows/agents over HTTP.",
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js"

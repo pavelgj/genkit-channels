@@ -9,6 +9,3 @@ channels/*/package-lock.json
 # Scratch symlink to the linked genkit source (machine-specific).
 scratch/
 
-# Compiled Go channel binary.
-channels/http-go/bin/
-

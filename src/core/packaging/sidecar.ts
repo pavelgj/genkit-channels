@@ -17,9 +17,8 @@
 /**
  * Sidecar packaging: the channel and the user app become two separate images
  * that run as sibling containers sharing localhost. The channel is the ingress
- * container on `$PORT`; it binds the reflection v2 WS server on a fixed loopback
- * port and waits (attached mode). The user app container dials that port and
- * registers.
+ * container on `$PORT`. The user app container serves v1 reflection on a fixed
+ * loopback port, and the channel reaches it with a remote box runner.
  *
  * This helper renders the two Dockerfiles. The platform-specific wiring (which
  * container is ingress, container start ordering, the service spec) is the
@@ -39,8 +38,8 @@ import type { ComposePlan } from '../types';
 const IMAGE_USER_DIR = '/app/user';
 
 /**
- * Renders the channel image Dockerfile. The channel runs in attached mode and
- * reads `channel.config.json` (baked in at `/app/channel.config.json`). It
+ * Renders the channel image Dockerfile. The channel reads
+ * `channel.config.json` (baked in at `/app/channel.config.json`). It
  * contains no user code.
  */
 export function renderChannelDockerfile(plan: ComposePlan): string {
@@ -51,24 +50,10 @@ export function renderChannelDockerfile(plan: ComposePlan): string {
   lines.push('# Channel image (sidecar packaging): ingress container.');
   lines.push('');
 
-  if (cb.language === 'go') {
-    lines.push('# --- Build the channel binary ---');
-    lines.push(`FROM ${cb.builderImage} AS channelbuild`);
-    lines.push(`COPY channel/ ${IMAGE_CHANNEL_DIR}/`);
-    lines.push(`WORKDIR ${IMAGE_CHANNEL_DIR}`);
-    for (const step of cb.buildSteps) lines.push(`RUN ${step}`);
-    lines.push('');
-    lines.push('# --- Runtime ---');
-    lines.push(`FROM ${cb.runtimeImage} AS runtime`);
-    lines.push('WORKDIR /app');
-    const binary = cb.runCommand[0];
-    lines.push(`COPY --from=channelbuild ${binary} ${binary}`);
-  } else {
-    lines.push(`FROM ${cb.runtimeImage} AS runtime`);
-    lines.push('WORKDIR /app');
-    lines.push(`COPY channel/ ${IMAGE_CHANNEL_DIR}/`);
-    for (const step of cb.buildSteps) lines.push(`RUN ${step}`);
-  }
+  lines.push(`FROM ${cb.runtimeImage} AS runtime`);
+  lines.push('WORKDIR /app');
+  lines.push(`COPY channel/ ${IMAGE_CHANNEL_DIR}/`);
+  for (const step of cb.buildSteps) lines.push(`RUN ${step}`);
 
   lines.push('COPY channel.config.json /app/channel.config.json');
   lines.push('ENV GENKIT_CHANNEL_CONFIG=/app/channel.config.json');
@@ -80,8 +65,8 @@ export function renderChannelDockerfile(plan: ComposePlan): string {
 }
 
 /**
- * Renders the user app image Dockerfile. The app runs headless and dials the
- * channel over loopback. The reflection v2 server URL and `GENKIT_ENV=dev` are
+ * Renders the user app image Dockerfile. The app runs headless and serves
+ * reflection on loopback. The reflection env (enabled, port, secret) is
  * injected by the target (env on the container), not baked here, so the image is
  * reusable across environments.
  */

@@ -17,18 +17,15 @@
 /**
  * Discord (gateway) channel entry point, written in TypeScript.
  *
- * Runs the user's Genkit app as a child process, discovers its agents over
- * reflection v2, and runs one agent as a Discord bot. The bot holds an outbound
- * WebSocket to Discord (via discord.js), so there is no public HTTP endpoint;
- * a tiny health server on $PORT exists only so the platform sees the container
- * listen (and doubles as the sidecar readiness gate).
+ * Runs one of the user's Genkit agents as a Discord bot. The bot holds an
+ * outbound WebSocket to Discord (via discord.js), so there is no public HTTP
+ * endpoint; a tiny health server on $PORT exists only so the platform sees the
+ * container listen.
  *
- * There is no codegen and no import of user code: the agent is driven through
- * the `AgentAPI` the genkit-channels helper builds over reflection v2, so the
- * same channel works against a JS, Go, or Python app. The framework also owns
- * config loading and process management: `startAppProcess()` self-configures
- * from `channel.config.json`, and `app.getConfig()` / `app.getAgent()` hand
- * back the resolved expose filter and a ready-to-drive agent.
+ * There is no codegen and no import of user code. `initChannel()` reads the
+ * deployment config and hands back an agent proxy; the app itself runs in a
+ * box (subprocess, sandbox, container, ...) that starts on first use, so the
+ * same channel works against a JS, Go, or Python app.
  *
  * As a TypeScript channel it declares a `build` in its `channel.yaml` that
  * compiles `src/*.ts` to `dist/*.js` (the `entry`); the CLI runs it at install
@@ -44,7 +41,7 @@ import {
   Partials,
   type SendableChannels,
 } from 'discord.js';
-import { type AgentAPI, startAppProcess } from 'genkit-channels';
+import { initChannel, type AgentChat, type AgentResponse } from 'genkit-channels';
 import { createServer } from 'node:http';
 import {
   deriveSessionKey,
@@ -73,24 +70,32 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  // The framework reads channel.config.json for us (managed vs attached mode,
-  // child spawn, ready timeout). Starting is synchronous.
-  const app = startAppProcess();
-  const { expose, options } = await app.getConfig<DiscordOptions>();
+  // Reads the deployment config. Sync: the app's box starts on the first turn
+  // (or at startup with `box.warm: true`).
+  const channel = initChannel<DiscordOptions>();
+  const { options } = channel;
 
-  // Readiness state, surfaced on the health server. We flip `ready` once the
-  // app has registered, the target agent is resolved, and the gateway login has
-  // completed.
+  // The bot drives exactly one agent: `expose.agent` in channels.yaml.
+  if (channel.expose.agents.length !== 1) {
+    console.error(
+      '[channel:discord] expose exactly one agent (`expose.agent` in ' +
+        `channels.yaml); got: ${channel.expose.agents.join(', ') || '(none)'}`
+    );
+    process.exit(1);
+  }
+  const agentName = channel.expose.agents[0];
+  const agent = channel.agent(agentName);
+  const agentState = channel.agentState(agentName);
+
+  // Ready once the gateway login completes. The app is not part of readiness:
+  // a boxed app may legitimately not be running until the first message.
   let ready = false;
-  let agent: AgentAPI | undefined;
-  let agentName: string | undefined;
-  let agentStateManagement: 'server' | 'client' | undefined;
   let botId: string | undefined;
 
-  // Client-managed session state (no server store): keep the latest SessionState
-  // blob per session key so the next turn can round-trip it. Server-managed
-  // agents ignore this (their store remembers the conversation by sessionId).
-  const clientState = new Map<string, unknown>();
+  // Client-managed agents (no server store): keep the latest state per session
+  // key so the next turn can round-trip it. Server-managed agents ignore this
+  // (their store remembers the conversation by sessionId).
+  const clientState = new Map<string, AgentResponse['raw']['state']>();
 
   // Health / readiness endpoint on $PORT. 200 once ready, 503 while starting up.
   const port = Number(process.env.PORT) || 8080;
@@ -140,7 +145,7 @@ async function main(): Promise<void> {
       console.error('[channel:discord] error handling message:', e);
       try {
         await msg.reply(
-          '⚠️ Sorry, something went wrong handling that. Please try again.'
+          'Sorry, something went wrong handling that. Please try again.'
         );
       } catch {
         // best-effort
@@ -230,22 +235,17 @@ async function main(): Promise<void> {
     channel: Message['channel'];
     input: string;
   }): Promise<void> {
-    const api = agent!;
-    const chat =
-      agentStateManagement === 'client'
-        ? api.chat(
-            clientState.has(sessionKey)
-              ? { state: clientState.get(sessionKey) as never }
-              : undefined
-          )
-        : api.chat({ sessionId });
+    const chat: AgentChat =
+      agentState === 'client'
+        ? agent.chat({ state: clientState.get(sessionKey) })
+        : agent.chat({ sessionId });
 
-    const res = await streamReply(() => chat.sendStream(input), channel);
+    const res = await streamReply(chat, input, channel);
 
     // Persist client-managed state for the next turn.
-    if (agentStateManagement === 'client') {
-      const state = (res as any)?.raw?.state;
-      if (state !== undefined) clientState.set(sessionKey, state);
+    const state = res?.raw.state;
+    if (agentState === 'client' && state !== undefined) {
+      clientState.set(sessionKey, state);
     }
   }
 
@@ -254,16 +254,18 @@ async function main(): Promise<void> {
    * debounced and truncated to Discord's limit. Falls back to a final post.
    */
   async function streamReply(
-    run: () => { stream: AsyncIterable<{ text?: string }>; response: Promise<any> },
+    chat: AgentChat,
+    input: string,
     channel: Message['channel']
-  ): Promise<any> {
-    const turn = run();
+  ): Promise<AgentResponse | undefined> {
+    const turn = chat.sendStream(input);
     let sent: Message | undefined;
     let accumulated = '';
     let lastEdit = 0;
     let lastRendered = '';
 
-    const sendable = channel as unknown as SendableChannels;
+    if (!channel.isSendable()) return undefined;
+    const sendable: SendableChannels = channel;
 
     const flush = async (force = false): Promise<void> => {
       const now = Date.now();
@@ -281,9 +283,7 @@ async function main(): Promise<void> {
 
     try {
       // Typing indicator until the first content lands.
-      if (typeof (channel as any).sendTyping === 'function') {
-        (channel as any).sendTyping().catch(() => {});
-      }
+      sendable.sendTyping().catch(() => {});
       for await (const chunk of turn.stream) {
         if (chunk.text) {
           accumulated += chunk.text;
@@ -302,39 +302,18 @@ async function main(): Promise<void> {
       return res;
     } catch (e) {
       console.error('[channel:discord] turn failed:', (e as Error).message);
-      const note = '⚠️ Sorry, something went wrong. Please try again.';
+      const note = 'Sorry, something went wrong. Please try again.';
       if (!sent) await sendable.send(note).catch(() => {});
       return undefined;
     }
   }
 
-  // Wait for the app, resolve the agent, then log in to Discord. `getAgent`
-  // discovers, picks the exposed agent (or the sole one), and builds the client.
+  // Log in to Discord. No need to wait for the app: its box starts on the
+  // first turn.
+  console.log(
+    `[channel:discord] driving agent "${agentName}" (${agentState} state)`
+  );
   try {
-    const agents = await app.listAgents();
-    const wanted = expose.agents[0];
-    const selected = wanted
-      ? agents.find((a) => a.name === wanted || a.key === `/agent/${wanted}`)
-      : agents.length === 1
-        ? agents[0]
-        : undefined;
-    if (!selected) {
-      const names = agents.map((a) => a.name).join(', ') || '(none)';
-      throw new Error(
-        wanted
-          ? `configured agent "${wanted}" not found among discovered agents: ${names}`
-          : `expected exactly one agent to drive; discovered: ${names}. ` +
-            `Set expose.agent to pick one.`
-      );
-    }
-    agentName = selected.name;
-    agentStateManagement = selected.stateManagement;
-    agent = await app.getAgent(selected.key);
-    console.log(
-      `[channel:discord] driving agent "${agentName}" ` +
-        `(${agentStateManagement ?? 'auto'} state)`
-    );
-
     await new Promise<void>((resolve, reject) => {
       client.once('clientReady', () => {
         botId = client.user?.id;
@@ -349,7 +328,7 @@ async function main(): Promise<void> {
     );
   } catch (e) {
     console.error(`[channel:discord] ${(e as Error).message}`);
-    await app.stop();
+    await channel.close();
     process.exit(1);
   }
 
@@ -361,7 +340,7 @@ async function main(): Promise<void> {
     } catch {
       // ignore
     }
-    await app.stop(signal);
+    await channel.close();
     process.exit(0);
   };
   process.on('SIGTERM', () => shutdown('SIGTERM'));

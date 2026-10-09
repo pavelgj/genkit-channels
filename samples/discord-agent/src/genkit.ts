@@ -19,7 +19,7 @@ import { retry } from "@genkit-ai/middleware";
 import { genkit } from "genkit/beta";
 
 // A single shared Genkit instance. `genkit/beta` gives us the agent APIs
-// (defineAgent, chat, sessions) the Discord channel drives over reflection v2.
+// (defineAgent, chat, sessions) the Discord channel drives.
 export const ai = genkit({
   plugins: [googleAI(), retry.plugin()],
   model: googleAI.model("gemini-flash-latest"),

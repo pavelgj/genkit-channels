@@ -32,42 +32,42 @@ inline.
 - [ ] **Only one deploy target (`cloud-run`).** The target registry
   (`src/core/targets/index.ts`) is built to be pluggable but only registers
   Cloud Run. No other targets, no docs on how to add one.
-- [ ] **`--local` only runs Node channels.** `src/commands/deploy.ts` throws for
-  Go channels; Go/Python user apps only work via the container path. Local
-  iteration is Node-only today.
 - [ ] **Channel `image` field is parsed but never used.** `channel.yaml`'s
   prebuilt-image field is validated/stored (`core/channels/loader.ts`) and
   documented in `types.ts`, but `deploySidecar` always rebuilds the channel
   image and never reads `definition.image`. Either wire it up or drop it.
-- [ ] **No auth on the transport or the reflection v2 hop.** Reflection v2 is
-  unauthenticated and dev-oriented (child must run with `GENKIT_ENV=dev`). The
-  HTTP channels expose actions with no authn/authz. This is the real
-  production-readiness gap, not performance. Decide the story: a hardened,
-  `GENKIT_ENV`-independent serve mode plus at least optional channel auth.
-- [ ] **Channel runtime robustness.** No child-process crash recovery / restart,
-  no reconnection/backoff on the WebSocket, no health/readiness endpoint, no
-  graceful shutdown/drain. Confirm behavior when the child dies mid-request.
+- [x] ~~Reflection hop is unauthenticated / needs GENKIT_ENV=dev.~~ Fixed by
+  moving to `@genkit-ai/box`: per-box secret, `GENKIT_REFLECTION_ENABLED`.
+- [ ] **No auth on the transport.** The HTTP channels expose actions with no
+  authn/authz. Decide on at least optional channel auth.
+- [ ] **Sidecar reflection secret is a plain env value in service.yaml.** Move
+  it to Secret Manager.
+- [ ] **Go channels.** Removed `http-go`; bring Go channels back as a clean
+  port once there is a Go genkit-in-a-box. (Go *apps* still work: they only
+  need to honor the reflection env vars.)
+- [ ] **Channel runtime robustness.** Box now restarts a dead app on the next
+  call (the in-flight call fails). Still missing: box lifecycle hooks for
+  health/logs (box FR-7), graceful drain.
+- [ ] **Delete box shims as features land.** See `scratch/box-frs.md` and
+  `TODO(box)` in `src/lib/`.
+- [ ] **`genkit-channel check <deployment>`**: boot the app once and verify
+  `expose` names (and `agentState`) against `listActions`. Typos currently
+  surface on the first call.
 - [ ] **Python runtime is listed but unproven.** `core/runtimes/python.ts`
   exists; confirm it actually round-trips end to end (or mark experimental).
 - [ ] **No CI.** No `.github/` workflow runs the existing test script on PRs.
 
 ## Rough implementation / APIs to refactor or redesign
 
-- [ ] **Three parallel HTTP channels (`http`, `http-ts`, `http-go`).** `http`
-  (plain JS) and `http-ts` (TS) are near line-for-line identical; `http-go` is a
-  third port with the same wire behavior. Any bug fix must land in three places.
-  Decide which ship as products vs. which are examples, and document the split.
-- [ ] **`GENKIT_ENV=dev` requirement is a design smell.** The channel only works
-  because it forces the child into dev mode so the reflection v2 client
-  activates. This carries a perf/behavior tax and is not something to ship as
-  the permanent mechanism. Needs a proper serve mode in Genkit core.
-- [ ] **Review the `startAppProcess` / `AppProcess` public surface.**
-  (`src/lib/app-process.ts`, ~550 lines.) It is the main thing channel authors
-  build on, so lock it down before release: naming, what is public vs. internal,
-  error types, streaming/`onChunk` contract, and lifecycle (`start`/`ready`).
-- [ ] **Review the agent client surface** (`src/lib/agent-client.ts`):
-  `createAgentApi`, `discoverAgents`, `getAgent`, chat/turn/session shapes.
-  Same concern: this is public API and should be stable.
+- [ ] **Two parallel HTTP channels (`http`, `http-ts`).** Plain JS and TS are
+  near line-for-line identical, so any bug fix must land twice. Decide which
+  ships as a product vs. which is an example.
+- [x] ~~`GENKIT_ENV=dev` requirement.~~ Gone; box turns reflection on with
+  `GENKIT_REFLECTION_ENABLED`.
+- [ ] **Review the `initChannel` / `Channel` surface** (`src/lib/channel.ts`).
+  Replaced `startAppProcess` + the hand-rolled reflection client. Open:
+  whether `agentState` belongs in config or should come from box (FR-6), and
+  whether `options` should be validated against a channel-declared schema.
 - [ ] **Manifest schema (`channels.yaml`) needs a spec + validation pass.**
   Nail down required vs. optional fields, error messages, and versioning of the
   format before users depend on it.
@@ -83,9 +83,8 @@ inline.
   `package.json`.
 - [ ] **No linter/formatter.** No eslint/prettier/editorconfig config and no
   `lint`/`format` scripts. Only `tsc --strict` gates quality today.
-- [ ] **`test:agent-dir` is excluded from `pnpm test`.** `test/agent-dir.mjs`
-  runs only via a separate script. Either fold it into the main suite or
-  document why it is separate.
+- [ ] **Live tests (`pnpm test:live`) are not in CI.** They need GEMINI_API_KEY
+  and a built `samples/discord-agent`.
 - [ ] **Drop the "experimental" framing once stabilized.** README title,
   `package.json` description, and the CLI description all say "experimental".
   Sweep these when the API is locked.
@@ -102,7 +101,7 @@ inline.
 - [ ] What is the supported matrix at launch: which channels (http only? +
   discord?), which runtimes (js only? + go/python?), which targets (cloud-run
   only?).
-- [ ] Is the reflection-v2-over-loopback model the shipping architecture, or an
-  interim step until Genkit core grows a first-class serve mode?
-- [ ] Semver commitment: is `startAppProcess` / agent-client considered stable
-  API at 1.0, and what is the deprecation policy for `channels.yaml`?
+- [x] ~~Is reflection-v2-over-loopback the shipping architecture?~~ The app
+  now runs in a box (`@genkit-ai/box`); the transport is box's concern.
+- [ ] Semver commitment: is `initChannel` considered stable API at 1.0, and
+  what is the deprecation policy for `channels.yaml`?

@@ -1,6 +1,6 @@
 name: http-ts
 description: >-
-  Expose a Genkit app's flows and agents over HTTP via reflection v2. TypeScript
+  Expose a Genkit app's flows and agents over HTTP. TypeScript
   implementation: compiled to JavaScript at install time (and again at image
   build time) via its declared build step.
 version: 0.1.0

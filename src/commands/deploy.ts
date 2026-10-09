@@ -206,60 +206,41 @@ async function processOne(
  * Two adjustments vs the container path make local iteration fast:
  *  - install the staged channel's own deps if missing (the container does this
  *    via a Dockerfile RUN; locally we do it lazily), and
- *  - point the child at the *original* project (not the copied `user/`), so its
- *    existing node_modules and build output are reused. The app must already be
- *    built (run its build once); we do not build it here.
+ *  - box the *original* project (not the copied `user/`), so its existing
+ *    node_modules and build output are reused. The app must already be built
+ *    (run its build once); we do not build it here.
  */
 async function runLocal(
   projectRoot: string,
   plan: ComposePlan
 ): Promise<void> {
-  const { stagingDir, channel, runtime, expose, config, usingAgentDir } = plan;
-
-  // --local runs the channel on the host. Node channels run their source
-  // directly; Go channels would need a built binary. Keep local iteration to
-  // Node channels for now (the container path covers Go).
-  if (channel.build.language !== 'node') {
-    throw new Error(
-      `--local currently supports Node channels only (channel "${channel.definition.name}" ` +
-        `is ${channel.build.language}). Use --build-only + docker, or the cloud-run target.`
-    );
-  }
+  const { stagingDir, channel, runtime, usingAgentDir } = plan;
 
   ensureChannelDeps(path.join(stagingDir, 'channel'));
 
-  // The child's working dir. For a real runtime we run from the *original*
-  // project so its node_modules / build output are reused. For the built-in
-  // agent-dir runtime there is no user project to run: the app was synthesized
-  // into the staging `user/` dir, so run (and install deps) there.
-  let childCwd: string;
+  // Where the app lives. For a real runtime we box the *original* project so
+  // its node_modules / build output are reused. For the built-in agent-dir
+  // runtime there is no user project to run: the app was synthesized into the
+  // staging `user/` dir, so run (and install deps) there.
+  let appDir: string;
   if (usingAgentDir) {
-    const appDir = path.join(stagingDir, 'user');
+    appDir = path.join(stagingDir, 'user');
     ensureAgentDirDeps(appDir);
-    childCwd = appDir;
   } else {
-    childCwd = path.resolve(projectRoot, runtime.cwd);
+    appDir = projectRoot;
   }
 
-  // Write a local config that runs the child from the resolved cwd.
-  const localConfig = {
-    child: {
-      command: runtime.command,
-      args: runtime.args,
-      cwd: childCwd,
-    },
-    expose,
-    config,
-    readyTimeoutMs: 30000,
-  };
-
+  const localConfig = plan.channelConfigFor(appDir);
   const localConfigPath = path.join(stagingDir, 'channel.local.json');
   fs.writeFileSync(localConfigPath, JSON.stringify(localConfig, null, 2) + '\n');
 
+  const runner = localConfig.box?.runner;
   logger.info(
     `\nRunning locally from ${stagingDir}\n` +
-      `  child: ${runtime.command} ${runtime.args.join(' ')} ` +
-      `(cwd: ${localConfig.child.cwd})\n`
+      `  app: ${runtime.command} ${runtime.args.join(' ')} ` +
+      `(cwd: ${path.join(appDir, runtime.cwd)})\n` +
+      `  box: ${runner?.type ?? 'exec'}, route ${localConfig.box?.route ?? 'app'}` +
+      ` (starts on first use)\n`
   );
 
   return new Promise((resolve, reject) => {
@@ -271,8 +252,20 @@ async function runLocal(
       },
       stdio: 'inherit',
     });
+    // Forward termination so the channel can close its boxes. A terminal
+    // Ctrl-C reaches the whole process group anyway, but a supervisor or
+    // `kill` only signals us.
+    const forward = (signal: NodeJS.Signals) => () => {
+      if (child.exitCode === null) child.kill(signal);
+    };
+    const onInt = forward('SIGINT');
+    const onTerm = forward('SIGTERM');
+    process.on('SIGINT', onInt);
+    process.on('SIGTERM', onTerm);
     child.on('error', reject);
     child.on('exit', (code) => {
+      process.off('SIGINT', onInt);
+      process.off('SIGTERM', onTerm);
       if (code === 0 || code === null) resolve();
       else reject(new Error(`channel exited with code ${code}`));
     });

@@ -15,14 +15,13 @@
  */
 
 /**
- * End-to-end test of the agent-dir feature. Spawns the built-in agent-dir
- * runtime (loadAgentDir over a temp agents folder) as a child via
- * startAppProcess, discovers the agent over reflection v2, and drives a real
- * turn through the ergonomic AgentAPI, exactly as an agent channel (Discord)
- * would.
+ * End-to-end test of the agent-dir feature. Boxes the built-in agent-dir
+ * runtime (loadAgentDir over a temp agents folder) via initChannel, checks
+ * the agent is registered (opt-in listActions), and drives a real turn through
+ * the agent proxy, exactly as an agent channel (Discord) would.
  *
  * Requires a model API key (GEMINI_API_KEY / GOOGLE_API_KEY). When none is set,
- * the live-turn assertions are skipped but discovery is still checked. Run after
+ * the live-turn assertions are skipped but registration is still checked. Run after
  * `pnpm build`:
  *
  *   . ~/init-gemini.sh && node test/agent-dir.mjs
@@ -32,7 +31,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { startAppProcess } from '../dist/index.js';
+import { initChannel } from '../dist/index.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '..');
@@ -80,24 +79,25 @@ async function main() {
   const projectRoot = makeAgentsDir();
   const entry = makeRuntimeEntry(projectRoot);
 
-  const app = startAppProcess({
-    child: { command: 'node', args: [entry], cwd: projectRoot },
-    readyTimeoutMs: 30000,
+  // Dir agents have no store by default, so they are client-managed.
+  const channel = initChannel({
+    config: {
+      expose: { agents: ['helper'] },
+      agentState: { helper: 'client' },
+      box: { runner: { type: 'exec', cmd: ['node', entry], cwd: projectRoot } },
+    },
   });
-  await app.ready;
 
-  const agents = await app.listAgents();
-  const helper = agents.find((a) => a.name === 'helper');
-  check('agent-dir registers /agent/helper', !!helper);
+  const actions = await channel.listActions();
+  const helper = !!actions['/agent/helper'];
+  check('agent-dir registers /agent/helper', helper);
 
   const hasKey = !!(process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY);
   if (!hasKey && helper) {
     console.log('  skip live turn (no GEMINI_API_KEY / GOOGLE_API_KEY set)');
   } else if (helper) {
-    const agent = await app.getAgent(helper.key);
-    // Dir agents have no store by default (client-managed state), so open a
-    // stateless chat rather than passing a sessionId.
-    const chat = agent.chat();
+    // Client-managed: open a stateless chat rather than passing a sessionId.
+    const chat = channel.agent('helper').chat();
     const turn = chat.sendStream('Say hi in five words.');
 
     let streamed = '';
@@ -108,7 +108,7 @@ async function main() {
     check('live turn returns text', !!(res.text && res.text.length > 0));
   }
 
-  await app.stop();
+  await channel.close();
   try {
     fs.rmSync(projectRoot, { recursive: true, force: true });
   } catch {

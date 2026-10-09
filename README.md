@@ -1,14 +1,14 @@
 # genkit-channels (experimental)
 
-Expose a Genkit app's flows and agents over a transport (a "channel").
-`genkit-channels` runs your app as a child process and talks to it over
-the reflection v2 protocol (JSON-RPC 2.0 over WebSocket), discovering its actions
-at runtime and mapping them onto a transport such as plain HTTP, a Slack bot, or
-a Discord bot.
+Expose a Genkit app's flows and agents over a transport (a "channel") such as
+plain HTTP, a Slack bot, or a Discord bot.
 
-Because the link is language-agnostic, one Node channel works against a JS, Go,
-or Python app. This package is both a CLI and a small helper library that channel
-authors build on.
+Your app runs in a box ([`@genkit-ai/box`](https://www.npmjs.com/package/@genkit-ai/box)):
+a local subprocess by default, or an OS sandbox, a container, or an
+already-running remote runtime. The channel drives it through proxies, so the
+same channel code works whichever box you pick, and against a JS, Go, or Python
+app. This package is both a CLI and a small helper library that channel authors
+build on.
 
 For the rationale, architecture, and open questions, see
 [docs/DESIGN.md](docs/DESIGN.md).
@@ -27,10 +27,15 @@ npm link            # exposes the `genkit-channels` binary on your PATH
 - **Channel**: a small Node program that maps a transport onto a Genkit app's
   actions. Channels live under `.genkit/channels/<name>/` in your project and are
   installed with `genkit-channels add`.
-- **Manifest** (`channels.yaml`): describes one or more deployments, each pairing
-  a channel with a runtime (how to build/run your app) and an optional target.
-- **Helper library** (`startAppProcess`): the reusable machinery a channel uses
-  to spawn your app and speak reflection v2.
+- **Channel manifest** (`channel.yaml`): written by the channel author.
+  Entry point, build step, env vars the channel needs, recommended service
+  settings, validation rules.
+- **Channel configuration** (`channels.yaml`): written by you. One or more
+  deployments, each pairing a channel with your app (`runtime`), what to
+  `expose`, channel options (`with`), how the app is boxed (`box`), and an
+  optional deploy target.
+- **Helper library** (`initChannel`): what a channel calls to get proxies for
+  your app's agents and flows.
 
 ## CLI
 
@@ -71,6 +76,49 @@ deployments:
     target: cloud-run
     region: us-central1
 ```
+
+`expose` is the source of truth for what the channel serves. Channels don't
+ask the app what it has at runtime, because a boxed app may not be running yet.
+Agents are server-managed (they have a session store) unless you say otherwise:
+
+```yaml
+    expose:
+      agent: helper
+      agentState:
+        helper: client   # no store: the channel carries the conversation state
+```
+
+### Boxing the app
+
+The optional `box` block decides where and how your app runs. It maps directly
+onto `@genkit-ai/box`, and the channel code doesn't change:
+
+```yaml
+    box:
+      runner:
+        type: exec            # exec (default) | podman | remote
+        isolate: local        # none | local | bubblewrap | sandbox-exec
+      route: session          # app (default, one box) | session | request
+      idle: 10m               # reclaim idle boxes (session default 5m)
+      env: [GEMINI_API_KEY]   # the only env vars the app receives
+      warm: true              # app route: start the box at channel startup
+```
+
+- **exec** runs `runtime.command` as a local subprocess (the default).
+  `isolate: local` jails it in seatbelt (macOS) or bubblewrap (Linux). That
+  is a dev-time guardrail, not containment.
+- **podman** runs it in a container (`image`, `network`, `extraArgs`, ...) with
+  egress blocked by default.
+- **remote** calls a runtime someone else started (`url`), e.g. the Cloud Run
+  sidecar. The secret comes from `GENKIT_REFLECTION_SECRET_TOKEN`.
+- **route: session** gives each agent conversation its own box. Flows share one
+  box. Pair it with a persistent session store if conversations must outlive
+  `idle`.
+- The channel's own env vars (from its `channel.yaml`, e.g. `DISCORD_TOKEN`)
+  are always withheld from the box unless you list them in `box.env`.
+
+Some of this is implemented with local shims while the matching box features
+land; see [scratch/box-frs.md](scratch/box-frs.md).
 
 ## Agents without a runtime (agent-dir)
 
@@ -135,51 +183,79 @@ See `samples/agent-dir-basic/` (no runtime) and `samples/agent-dir-custom/`
 ## Writing a channel
 
 
-A channel is a Node package with a `channel.yaml` and an entry module. It imports
-`startAppProcess` from `genkit-channels` and maps a transport onto the discovered
-actions. `startAppProcess()` is synchronous and self-configuring: it reads the
-composed `channel.config.json` for you (managed vs attached mode, how to spawn
-your app), so a channel writes almost no plumbing:
+A channel is a Node package with a `channel.yaml` and an entry module. It calls
+`initChannel()`, which reads the deployment config and hands back proxies.
+Everything is synchronous: no process starts until the first call.
 
-```js
-import { startAppProcess } from 'genkit-channels';
+```ts
+import { initChannel } from 'genkit-channels';
 
-const app = startAppProcess();                 // reads channel.config.json
-const { expose } = await app.getConfig();      // resolved expose filter + options
+interface MyOptions {
+  greeting?: string;
+}
 
-const actions = await app.listActions();       // awaits readiness for you
-const { result } = await app.runAction({ key: '/flow/foo', input });
-// streaming:
-await app.runAction({ key, input, onChunk: (c) => ... });
-```
+const channel = initChannel<MyOptions>();
+const { expose, options } = channel; // from channels.yaml (`expose`, `with`)
 
-For chat channels that drive an agent, resolve one with `getAgent`:
-
-```js
-import { startAppProcess } from 'genkit-channels';
-
-const app = startAppProcess();
-const agent = await app.getAgent('weatherAgent'); // or omit for the sole agent
+// Agents: a standard AgentAPI (chat, sendStream, getSnapshot, abort).
+const agent = channel.agent(expose.agents[0]);
 const turn = agent.chat({ sessionId }).sendStream('hello');
 for await (const chunk of turn.stream) process.stdout.write(chunk.text);
+const res = await turn.response;
+
+// Client-managed agents: round-trip the state yourself.
+if (channel.agentState(expose.agents[0]) === 'client') {
+  const next = agent.chat({ state: res.raw.state });
+}
+
+// Flows: a regular Genkit action. Cancel with an AbortSignal.
+const ac = new AbortController();
+const { stream, output } = channel.flow('summarize').stream(input, {
+  abortSignal: ac.signal,
+});
+
+// On shutdown: stop every box the channel started.
+await channel.close();
 ```
 
-See `channels/http/` (transport) and `channels/discord/` (agent) for complete
-examples.
+A few more things are available when you need them:
+
+- `channel.warm()` starts the app now rather than on the first call.
+- `channel.listActions()` asks the app what it has. It is opt-in and may start
+  a box just to answer.
+- `channel.box` / `channel.ai` expose the underlying box and Genkit instance.
+- `initChannel({ config, runner })` takes the config inline or a custom
+  `BoxRunner`, which is handy for tests.
+
+See `channels/http-ts/` (flows and agents over HTTP) and `channels/discord/`
+(one agent as a bot) for complete examples.
 
 
 ## How it runs
 
-At deploy time the CLI composes a staging dir containing the channel, your app
-source, and a `channel.config.json` describing how to build/run your app (the
-"child") plus any `expose` filter. The channel reads that config, spawns the
-child with `GENKIT_REFLECTION_V2_SERVER` set, waits for the child to `register`,
-lists its actions, and serves them.
+At deploy time the CLI composes a staging dir with the channel, your app
+source, and a `channel.config.json`: the deployment from `channels.yaml` with
+defaults filled in (the box runner command comes from `runtime`, paths are
+resolved, and the channel's env vars are withheld from the box). Users never
+edit this file; `initChannel()` reads it.
 
-Note: the reflection v2 client only activates when the runtime runs with
-`GENKIT_ENV=dev`, so the helper sets that on the child. The child must be
-"headless" (register its actions and idle, without starting its own HTTP
-transport) so it does not collide with the channel on `$PORT`.
+At runtime the channel's box starts your app on demand. With the exec runner
+the app dials back over reflection v2. With podman or remote, the channel calls
+the app's v1 reflection server. Either way the link is authenticated with a
+per-box secret, and reflection is turned on with `GENKIT_REFLECTION_ENABLED`
+(not `GENKIT_ENV=dev`), so the app keeps production defaults.
+
+Requirements on your app:
+
+- **genkit 1.43 or newer** (JS), or a Go/Python runtime that honors
+  `GENKIT_REFLECTION_ENABLED` and `GENKIT_REFLECTION_SECRET_TOKEN`. Older
+  runtimes don't present the secret and are rejected.
+- **Headless**: register actions and idle, without starting your own HTTP
+  server, so it doesn't collide with the channel on `$PORT`.
+
+On Cloud Run, `single-container` packaging boxes the app as a subprocess in
+the channel's container. `sidecar` runs the app in its own container serving
+reflection on loopback, and the channel reaches it with a `remote` runner.
 
 ## Overhead
 
@@ -212,24 +288,20 @@ What this means in practice:
 - **Memory is dominated by the channel's own runtime.** The Go channel plus its
   child idles around 28 MB; the Node channel plus the same child around 81 MB.
 
-These channel numbers include the `GENKIT_ENV=dev` tax, since the child must run
-in dev mode for the reflection v2 client to activate today. They are therefore
-the honest end-to-end overhead a user would see, not a best case. A hardened,
-`GENKIT_ENV`-independent serve mode would only shrink them.
-
-What benchmarks cannot answer: reflection v2 is currently unauthenticated and
-dev-oriented, so **security and API stability**, not performance, are the real
-work before this is production-grade. See
-[docs/DESIGN.md](docs/DESIGN.md#productionization--risks).
+These numbers predate the move to `@genkit-ai/box` (and the Go channel has
+since been removed) and were measured with the child in `GENKIT_ENV=dev`. Boxed apps now run with production defaults and an
+authenticated link; the numbers need re-measuring.
 
 ## Layout
 
 ```
 genkit-channels/
-  src/                      CLI + startAppProcess helper library
+  src/                      CLI + initChannel helper library
+    lib/shims/              local stand-ins for pending box features
   channels/
-    http/                   the bundled Node HTTP channel
-    http-go/                the Go HTTP channel (small static binary)
+    http/                   the bundled Node HTTP channel (plain JS)
+    http-ts/                the same, in TypeScript
+    discord/                one agent as a Discord gateway bot
   samples/
     discord-agent/          a Genkit agent wired to the Discord channel
     discord-agent-dir/      a runtime-less Discord bot (just a folder of prompts)
@@ -238,7 +310,7 @@ genkit-channels/
   bench/                    overhead benchmark harness (real Genkit app)
 
   docs/                     DESIGN.md, BENCHMARKS.md
-  test/                     smoke test + fake reflection v2 client
+  test/                     tests, a fake reflection runtime, a real echo app
 ```
 
 
@@ -246,5 +318,8 @@ genkit-channels/
 
 ```bash
 pnpm build
-pnpm smoke      # exercises startAppProcess against the fake runtime
+pnpm test       # no API keys or containers needed
+
+# against Gemini (needs GEMINI_API_KEY and samples/discord-agent built once)
+pnpm test:live
 ```

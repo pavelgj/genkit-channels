@@ -3,7 +3,7 @@
 # With no `runtime` block the framework runs the built-in agent-dir runtime,
 # which loads ./agents, installs the default middleware (filesystem, skills,
 # retry, ...), and registers each agent folder as an agent. The Discord channel
-# discovers the agent over reflection v2 and runs it as a gateway bot.
+# runs it as a gateway bot.
 #
 # Install the channel, then run locally (see README for prerequisites):
 #
@@ -20,12 +20,20 @@ deployments:
       dir: ./agents
       model: googleai/gemini-flash-latest
     expose:
-      # The agent the bot drives. With a single agent you can omit this.
+      # The agent the bot drives.
       agent: concierge
+      # Dir agents have no session store, so the caller (the channel) carries
+      # the conversation state.
+      agentState:
+        concierge: client
     # Channel-specific options (all optional). See channels/discord/channel.yaml.
     with:
       # 'thread' (default) keeps a separate conversation per thread/DM;
       # 'channel' shares one conversation per channel.
       session: thread
-    # Env vars forwarded to the running service (and the built-in runtime).
+    # Env vars forwarded to the running service.
     env: [DISCORD_TOKEN, GEMINI_API_KEY]
+    # The agent runs in a box. The channel's own env (DISCORD_TOKEN) is kept out
+    # of it automatically; `env` narrows it further to just what it needs.
+    box:
+      env: [GEMINI_API_KEY]

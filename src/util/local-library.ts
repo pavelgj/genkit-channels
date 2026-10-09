@@ -18,8 +18,7 @@
  * Helpers for making the (as-yet unpublished) `genkit-channels` helper library
  * resolvable when building or running a channel from a local checkout.
  *
- * Bundled channels depend on `genkit-channels` for `startAppProcess` /
- * `createAgentApi`. Until it is published to npm, a channel's own `npm install`
+ * Bundled channels depend on `genkit-channels` for `initChannel`. Until it is published to npm, a channel's own `npm install`
  * (whether triggered at install-time build or `--local` run) would fail to
  * resolve that dependency. We rewrite it to a `file:` path pointing at this
  * package so npm links it locally. Once the library is published these become

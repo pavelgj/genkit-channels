@@ -15,16 +15,23 @@
  */
 
 /**
- * Loads and validates channels.yaml.
+ * Loads and validates channels.yaml (the user's channel configuration).
  *
- * Channel-specific validation lives in each channel's `channel.yaml` (JSONata
- * rules), so this file only validates manifest structure. The channel name is a
+ * Channel-specific validation lives in each channel's `channel.yaml` manifest
+ * (JSONata rules), so this file only validates structure. The channel name is a
  * free-form string that must resolve to an installed channel at deploy time.
+ * The `box` block is validated against the same schema `initChannel` uses.
  */
 
 import fs from 'fs';
+import { z } from 'genkit';
 import path from 'path';
 import * as YAML from 'yaml';
+import {
+  AgentStateSchema,
+  BoxConfigSchema,
+  formatZodError,
+} from '../lib/config';
 import { parseServiceSettings } from './service-settings';
 import { isKnownTarget, knownTargets } from './targets';
 import type {
@@ -136,6 +143,16 @@ function validateDeployment(
   if (typeof expose !== 'object') {
     throw new Error(`${where}.expose must be an object.`);
   }
+  const agentState = parseOrThrow(
+    z.record(AgentStateSchema).optional(),
+    expose.agentState,
+    `${where}.expose.agentState`
+  );
+  const box = parseOrThrow(
+    BoxConfigSchema.optional(),
+    d.box,
+    `${where}.box`
+  );
 
   return {
     name: d.name,
@@ -146,7 +163,9 @@ function validateDeployment(
       agent: expose.agent,
       agents: expose.agents,
       flows: expose.flows,
+      agentState,
     },
+    box,
 
     target: d.target,
     packaging: d.packaging,
@@ -219,4 +238,15 @@ export function resolveFlows(d: DeploymentManifest): string[] {
 
 function dedupe(items: string[]): string[] {
   return Array.from(new Set(items));
+}
+
+/** Validates `value` with `schema`, throwing a readable, located error. */
+function parseOrThrow<T extends z.ZodTypeAny>(
+  schema: T,
+  value: unknown,
+  where: string
+): z.output<T> {
+  const parsed = schema.safeParse(value);
+  if (!parsed.success) throw new Error(formatZodError(parsed.error, where));
+  return parsed.data;
 }

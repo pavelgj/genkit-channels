@@ -20,5 +20,8 @@ deployments:
       dir: ./agents
       model: googleai/gemini-flash-latest
     expose:
-      # The single agent the folder defines. With one agent you can omit this.
+      # The agent the folder defines. Dir agents have no session store, so
+      # callers carry the conversation state.
       agent: assistant
+      agentState:
+        assistant: client

@@ -16,9 +16,9 @@
 
 /**
  * App entry point. Importing the agent module is enough to register it with
- * Genkit; the genkit-channels Discord channel discovers it over reflection v2
- * and drives it as a Discord bot. There is no HTTP server to start here: the
- * channel runs this file as a headless child process.
+ * Genkit; the genkit-channels Discord channel drives it as a Discord bot. There
+ * is no HTTP server to start here: the channel runs this file headless in a box
+ * (see `box` in channels.yaml).
  */
 
 import './agent.js';

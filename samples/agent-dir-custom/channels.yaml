@@ -26,3 +26,5 @@ deployments:
       dir: ./agents
     expose:
       agent: weatherer
+      agentState:
+        weatherer: client
