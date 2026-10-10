@@ -43,6 +43,13 @@ ai.defineAgent({
   store: new InMemorySessionStore(),
 });
 
+// No store: client-managed, the caller carries the state.
+ai.defineAgent({
+  name: 'echoClientAgent',
+  system: 'You echo.',
+  model: echoModel,
+});
+
 ai.defineFlow(
   {
     name: 'countTo',

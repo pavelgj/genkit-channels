@@ -289,7 +289,8 @@ A few more things are available when you need them:
 - `initChannel({ config, runner })` takes the config inline or a custom
   `BoxRunner`, which is handy for tests.
 
-See `channels/http-ts/` (flows and agents over HTTP) and `channels/discord/`
+See `channels/http-ts/` (flows and agents over HTTP), `channels/slack-socket/`
+(a Slack bot, with its pure logic split out for tests) and `channels/discord/`
 (one agent as a bot) for complete examples.
 
 
@@ -363,8 +364,9 @@ genkit-channels/
     http/                   the bundled Node HTTP channel (plain JS)
     http-ts/                the same, in TypeScript
     discord/                one agent as a Discord gateway bot
+    slack-socket/           one agent as a Slack bot (Socket Mode)
   samples/
-    discord-agent/          a Genkit agent wired to the Discord channel
+    discord-agent/          a Genkit agent wired to Discord and Slack
     discord-agent-dir/      a runtime-less Discord bot (just a folder of prompts)
     agent-dir-basic/        a runtime-less agent (just a folder of prompts)
     agent-dir-custom/       an agent-dir runtime with a custom tool

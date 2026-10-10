@@ -48,6 +48,13 @@ inline.
   strings; only Cloud Run (Secret Manager) interprets them today. Also
   consider a custom runtime service account (the printed IAM grant assumes the
   default compute account).
+- [ ] **slack-webhook channel** (Events API over HTTP, signing secret,
+  `access: public`). Share `bridge.ts` / `turn.ts` / `slack-reply.ts` with
+  `slack-socket` once it exists. Also consider Slack's agent side panel
+  (Assistant class: suggested prompts, thread titles).
+- [ ] **slack-socket: followed threads are in memory** (lost on restart; not
+  shared across instances). Could be derived from `conversations.replies`
+  on demand instead.
 - [ ] **Go channels.** Removed `http-go`; bring Go channels back as a clean
   port once there is a Go genkit-in-a-box. (Go *apps* still work: they only
   need to honor the reflection env vars.)

@@ -1,0 +1,23 @@
+{
+  "name": "genkit-channels-slack-socket",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Slack (Socket Mode) channel for genkit-channels: runs a Genkit agent as a Slack bot.",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js"
+  },
+  "engines": {
+    "node": ">=20.12"
+  },
+  "dependencies": {
+    "@slack/bolt": "^5.1.0",
+    "genkit-channels": "^0.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.19",
+    "typescript": "^5.3.3"
+  }
+}

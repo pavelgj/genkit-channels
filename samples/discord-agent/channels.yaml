@@ -1,10 +1,13 @@
-# Wires this Genkit app to the Discord channel. Install the channel first with:
+# Wires this Genkit app to two channels: Discord and Slack (Socket Mode). The
+# same agent, behind two bots. Install the channels first with:
 #
 #   genkit-channel add ../../channels discord
+#   genkit-channel add ../../channels slack-socket
 #
-# then deploy it locally:
+# then run one locally:
 #
 #   genkit-channel deploy discord-bot --local
+#   genkit-channel deploy slack-bot --local
 #
 deployments:
   - name: discord-bot
@@ -52,3 +55,23 @@ deployments:
       # minutes. History survives reclaim because .snapshots is on disk.
       # route: session
       # idle: 10m
+
+  - name: slack-bot
+    channel: slack-socket
+    runtime:
+      language: js
+      build: npm run build
+      command: node
+      args: [lib/index.js]
+    expose:
+      agent: weatherAgent
+    # Options (all optional). See channels/slack-socket/channel.yaml.
+    with:
+      # Keep answering in a thread after the first @mention there.
+      followThreads: true
+      # 'native' uses Slack's text streaming; 'edit' posts and then updates.
+      stream: native
+    # SLACK_BOT_TOKEN and SLACK_APP_TOKEN are declared by the channel.
+    secrets: [GEMINI_API_KEY]
+    box:
+      env: []

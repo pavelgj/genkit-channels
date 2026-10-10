@@ -1,0 +1,140 @@
+/**
+ * Copyright 2025 Google LLC
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+/**
+ * {@link Reply} implementations on the Slack Web API. Both post into a thread
+ * and send the model's markdown as `markdown_text`, so there is no conversion
+ * to Slack's mrkdwn.
+ *
+ *  - native: Slack's text streaming (`chat.startStream` / `appendStream` /
+ *    `stopStream`, via the SDK's `chatStream` helper, which buffers appends).
+ *  - edit: post once, then debounced `chat.update`. For workspaces where
+ *    native streaming isn't available.
+ */
+
+import type { webApi } from '@slack/bolt';
+import { MAX_MARKDOWN_LEN, truncate } from './bridge.js';
+import type { Reply } from './turn.js';
+
+type WebClient = webApi.WebClient;
+
+export interface ReplyTarget {
+  channel: string;
+  threadTs: string;
+  /** The user being answered (native streaming needs it outside DMs). */
+  user?: string;
+  team?: string;
+}
+
+/** "is thinking..." in the thread; cleared by Slack when the bot replies. */
+async function setThinking(client: WebClient, t: ReplyTarget): Promise<void> {
+  await client.assistant.threads.setStatus({
+    channel_id: t.channel,
+    thread_ts: t.threadTs,
+    status: 'is thinking...',
+  });
+}
+
+export function nativeStreamReply(client: WebClient, t: ReplyTarget): Reply {
+  const streamer = client.chatStream({
+    channel: t.channel,
+    thread_ts: t.threadTs,
+    recipient_user_id: t.user,
+    recipient_team_id: t.team,
+  });
+  let started = false;
+  let length = 0;
+  return {
+    thinking: () => setThinking(client, t),
+    async append(text) {
+      // Stay under the per-message limit; the rest is dropped (rare for chat).
+      const room = MAX_MARKDOWN_LEN - 1 - length;
+      if (room <= 0) return;
+      const piece = text.slice(0, room);
+      length += piece.length;
+      started = true;
+      await streamer.append({ markdown_text: piece });
+    },
+    async finish(fullText) {
+      if (!started) {
+        // Nothing streamed (e.g. a tool-only turn that ends with text in the
+        // final response): send the whole thing in one go.
+        const text = truncate(fullText.trim());
+        if (!text) return;
+        await streamer.append({ markdown_text: text });
+      }
+      await streamer.stop();
+    },
+    async fail(message) {
+      if (started) {
+        await streamer.append({ markdown_text: `\n\n_${message}_` });
+        await streamer.stop();
+      } else {
+        await client.chat.postMessage({
+          channel: t.channel,
+          thread_ts: t.threadTs,
+          text: message,
+        });
+      }
+    },
+  };
+}
+
+export function editReply(
+  client: WebClient,
+  t: ReplyTarget,
+  intervalMs: number
+): Reply {
+  let ts: string | undefined;
+  let text = '';
+  let rendered = '';
+  let lastEdit = 0;
+
+  const render = async (force: boolean): Promise<void> => {
+    const now = Date.now();
+    if (!force && now - lastEdit < intervalMs) return;
+    const next = truncate(text.trim());
+    if (!next || next === rendered) return;
+    lastEdit = now;
+    rendered = next;
+    if (!ts) {
+      const res = await client.chat.postMessage({
+        channel: t.channel,
+        thread_ts: t.threadTs,
+        markdown_text: next,
+      });
+      ts = res.ts;
+    } else {
+      await client.chat.update({ channel: t.channel, ts, markdown_text: next });
+    }
+  };
+
+  return {
+    thinking: () => setThinking(client, t),
+    async append(chunk) {
+      text += chunk;
+      await render(false);
+    },
+    async finish(fullText) {
+      text = fullText;
+      await render(true);
+    },
+    async fail(message) {
+      text = text.trim() ? `${text}\n\n_${message}_` : message;
+      await render(true);
+    },
+  };
+}

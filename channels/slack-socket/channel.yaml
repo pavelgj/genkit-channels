@@ -1,0 +1,52 @@
+name: slack-socket
+description: >-
+  Run a Genkit agent as a Slack bot over Socket Mode (WebSocket). The bot holds
+  an outbound connection to Slack, so there is no public HTTP endpoint. Answers
+  @mentions (in a thread), DMs, and follow-up replies in threads it joined.
+version: 0.1.0
+language: node
+# Compiled output of `build`; absent until the build has run.
+entry: dist/index.js
+build: npm install && npm run build
+
+# Create the Slack app from manifest.json in this directory (see README.md).
+#  - SLACK_BOT_TOKEN: Install App -> Bot User OAuth Token (xoxb-...)
+#  - SLACK_APP_TOKEN: Basic Information -> App-Level Tokens, with the
+#    connections:write scope (xapp-...)
+# Both reach the channel process only, never the boxed app.
+secrets: [SLACK_BOT_TOKEN, SLACK_APP_TOKEN]
+
+# Options (the deployment's `with` block), all optional:
+#   followThreads: true          keep answering in threads the bot replied in
+#   stream: native | edit        Slack text streaming, or debounced edits
+#   streamEditIntervalMs: 700    debounce for `stream: edit`
+
+# Socket Mode keeps an outbound WebSocket open, so the instance must stay warm
+# with CPU allocated. No public endpoint, so access stays private.
+recommends:
+  service:
+    cpu: always-allocated
+    minInstances: 1
+
+validate:
+  - expr: >-
+      $count(expose.agents) = 1
+    message: >-
+      slack-socket drives exactly one agent: set `expose.agent` in channels.yaml.
+  - expr: >-
+      $not($exists(config.stream)) or config.stream in ['native', 'edit']
+    message: >-
+      with.stream must be "native" or "edit".
+
+warn:
+  - expr: >-
+      deployment.service.access = 'public'
+    message: >-
+      service.access is "public", but a Socket Mode bot has no HTTP endpoint to
+      reach; leave access private.
+  - expr: >-
+      deployment.service.maxInstances > 1
+    message: >-
+      More than one instance means several Socket Mode connections; Slack
+      spreads events across them, and each instance only follows threads it
+      answered itself. Prefer maxInstances: 1.

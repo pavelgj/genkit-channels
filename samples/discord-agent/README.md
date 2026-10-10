@@ -63,6 +63,20 @@ channel it can see:
 The bot streams the agent's reply back as it generates, editing a single message
 as text arrives.
 
+## Slack too
+
+The same agent also runs as a Slack bot (the `slack-bot` deployment, using the
+`slack-socket` channel). Create the Slack app as described in
+[`channels/slack-socket/README.md`](../../channels/slack-socket/README.md), put
+`SLACK_BOT_TOKEN` and `SLACK_APP_TOKEN` in `.env.local`, then:
+
+```bash
+genkit-channels add ../../channels slack-socket
+genkit-channels deploy slack-bot --local
+```
+
+Mention the bot in a channel it was invited to, or DM it.
+
 ## How it fits together
 
 - `agent.ts` defines `weatherAgent` with a `store`, which makes it
