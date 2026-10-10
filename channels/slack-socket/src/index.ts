@@ -53,6 +53,15 @@ interface SlackOptions {
 
 const log = (msg: string) => console.log(`[channel:slack] ${msg}`);
 
+/** Bot scopes the channel uses (see manifest.json). */
+const REQUIRED_SCOPES = [
+  'app_mentions:read',
+  'chat:write',
+  'im:history',
+  'channels:history',
+  'groups:history',
+];
+
 async function main(): Promise<void> {
   const channel = initChannel<SlackOptions>();
   const { options } = channel;
@@ -98,7 +107,9 @@ async function main(): Promise<void> {
     const sessionId = uuidv5(key);
     // One turn at a time per thread; queued messages run in order.
     return queue.run(key, async () => {
-      await runTurn({
+      const started = Date.now();
+      log(`turn start: thread ${trigger.threadTs}`);
+      const res = await runTurn({
         // One handle per conversation, so `box.route: session` gives each
         // thread its own box.
         agent: channel.agent(agentName, { sessionId }),
@@ -113,6 +124,10 @@ async function main(): Promise<void> {
         clientState,
         log,
       });
+      log(
+        `turn ${res ? 'done' : 'failed'}: thread ${trigger.threadTs} ` +
+          `(${Date.now() - started}ms)`
+      );
     });
   }
 
@@ -129,6 +144,7 @@ async function main(): Promise<void> {
       threadTs: event.thread_ts,
     };
     const trigger = mentionTrigger(ev, context.botUserId ?? botUserId);
+    log(`app_mention in ${ev.channel} from ${ev.user ?? '?'}${trigger ? '' : ' (ignored)'}`);
     if (trigger) void handle(ev, trigger, context.teamId);
   });
 
@@ -149,6 +165,13 @@ async function main(): Promise<void> {
       followThreads,
       isFollowed: (threadTs) => followed.has(`${ev.channel}:${threadTs}`),
     });
+    // Channel chatter is the common case; only log what we act on, and DMs.
+    if (trigger || ev.channelType === 'im') {
+      log(
+        `message (${ev.channelType}) in ${ev.channel} from ${ev.user ?? '?'}` +
+          (trigger ? '' : ' (ignored)')
+      );
+    }
     if (trigger) void handle(ev, trigger, context.teamId);
   });
 
@@ -175,9 +198,23 @@ async function main(): Promise<void> {
     const auth = await app.client.auth.test();
     team = auth.team_id ?? '';
     botUserId = auth.user_id;
+    // A token missing scopes connects fine but never sees the events it needs.
+    const granted = auth.response_metadata?.scopes ?? [];
+    const missing = REQUIRED_SCOPES.filter((s) => !granted.includes(s));
+    if (granted.length > 0 && missing.length > 0) {
+      console.warn(
+        `[channel:slack] the bot token lacks scopes: ${missing.join(', ')}. ` +
+          `Add them under OAuth & Permissions, then reinstall the app.`
+      );
+    }
     await app.start();
     ready = true;
     log(`ready as @${auth.user} in ${auth.team} (bot user ${botUserId})`);
+    log(
+      'waiting for events. If nothing shows up when you @mention or DM the ' +
+        'bot, check Event Subscriptions (app_mention, message.im, ' +
+        'message.channels) and that the bot was invited to the channel.'
+    );
   } catch (e) {
     console.error(`[channel:slack] ${(e as Error).message}`);
     await channel.close();
