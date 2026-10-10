@@ -35,12 +35,9 @@
     "build": "tsc",
     "build:watch": "tsc --watch",
     "smoke": "node test/smoke.mjs",
-    "pretest:discord-bridge": "tsc channels/discord/src/bridge.ts --outDir channels/discord/dist --module nodenext --moduleResolution nodenext --target ES2021 --skipLibCheck",
-    "test:discord-bridge": "npm run pretest:discord-bridge && node test/discord-bridge.mjs",
-    "test": "node test/config.mjs && node test/secrets.mjs && node test/smoke.mjs && node test/agent.mjs && node test/box-routing.mjs && node test/real-app.mjs && npm run test:discord-bridge && npm run test:slack && node test/packaging.mjs && node test/service-settings.mjs",
+    "test": "node test/config.mjs && node test/secrets.mjs && node test/smoke.mjs && node test/agent.mjs && node test/box-routing.mjs && node test/real-app.mjs && npm run test:units && node test/packaging.mjs && node test/service-settings.mjs",
     "test:live": "node test/agent-dir.mjs && node test/live.mjs",
-    "pretest:slack": "tsc -p test/tsconfig.slack.json",
-    "test:slack": "npm run pretest:slack && node test/slack.mjs"
+    "test:units": "node test/build-channel-units.mjs && node test/discord-bridge.mjs && node test/slack.mjs"
   },
   "engines": {
     "node": ">=20.12"

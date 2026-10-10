@@ -26,6 +26,7 @@ import { spawn, spawnSync } from 'child_process';
 import { Command } from 'commander';
 import fs from 'fs';
 import path from 'path';
+import { readChannelLock } from '../core/channels/install';
 import { compose } from '../core/compose';
 import { loadManifest } from '../core/manifest';
 import {
@@ -240,6 +241,27 @@ async function runLocal(
     throw new Error(
       `Missing secrets:\n${formatSecretList(missing)}\n` +
         `Add them to ${local} (or ${deploymentLocal}), or set them in your shell.`
+    );
+  }
+
+  // --local never builds the channel: building runs channel code, which `add`
+  // only does after you confirm. So a channel that builds must have been
+  // built at install time; say so plainly instead of a MODULE_NOT_FOUND.
+  const def = channel.definition;
+  if (!fs.existsSync(path.join(stagingDir, channel.entryFromStaging))) {
+    // The install dir name (what `add` and the lock use), not `name:` from
+    // channel.yaml, which may differ.
+    const installed = path.basename(def.dir);
+    const lock = readChannelLock(projectRoot, installed);
+    const source = lock?.source ?? '<source>';
+    throw new Error(
+      `Channel "${def.name}" isn't built (${def.entry} is missing).` +
+        (def.build
+          ? ` Build it with:\n` +
+            `  genkit-channel add ${source} ${installed} --force --yes\n` +
+            `or in place:\n` +
+            `  cd ${path.relative(process.cwd(), def.dir) || '.'} && ${def.build}`
+          : ` Reinstall it: genkit-channel add ${source} ${installed} --force`)
     );
   }
 

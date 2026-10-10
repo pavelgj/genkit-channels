@@ -21,6 +21,7 @@
 
 import fs from 'fs';
 import path from 'path';
+import * as YAML from 'yaml';
 import { logger } from '../../util/logger';
 import { channelDir, channelsRoot } from './loader';
 import type { ParsedSource } from './fetch';
@@ -87,7 +88,16 @@ export function installChannels(
       fs.rmSync(destDir, { recursive: true, force: true });
     }
 
-    copyDir(path.join(sourceRootDir, name), destDir);
+    const srcDir = path.join(sourceRootDir, name);
+    // A channel that builds gets its output from that build (run by `add`
+    // after confirmation, or by the image build), never from whatever `dist/`
+    // the source checkout happens to have. A stale or partial one would
+    // otherwise look like a finished build.
+    const skip = new Set(['node_modules', '.git']);
+    if (declaresBuild(srcDir)) {
+      for (const d of BUILD_OUTPUT_DIRS) skip.add(d);
+    }
+    copyDir(srcDir, destDir, skip);
 
     const lock: ChannelLock = {
       source: parsed.raw,
@@ -138,16 +148,47 @@ function discoverChannels(sourceRootDir: string): string[] {
   return names.sort();
 }
 
-function copyDir(src: string, dest: string) {
+/** Build output dirs dropped from channels that declare a `build`. */
+const BUILD_OUTPUT_DIRS = ['dist'];
+
+/**
+ * Whether the channel's `channel.yaml` declares a `build`. Read loosely: a
+ * malformed manifest still installs, and fails later with the loader's
+ * proper error.
+ */
+function declaresBuild(channelSrcDir: string): boolean {
+  try {
+    const raw: unknown = YAML.parse(
+      fs.readFileSync(path.join(channelSrcDir, 'channel.yaml'), 'utf8')
+    );
+    return (
+      typeof raw === 'object' &&
+      raw !== null &&
+      'build' in raw &&
+      typeof raw.build === 'string' &&
+      raw.build.length > 0
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** Copies `src` to `dest`, skipping top-level dirs named in `skipTop`. */
+function copyDir(src: string, dest: string, skipTop: ReadonlySet<string>) {
   fs.mkdirSync(dest, { recursive: true });
   for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
     const s = path.join(src, entry.name);
     const d = path.join(dest, entry.name);
     if (entry.isDirectory()) {
-      if (entry.name === 'node_modules' || entry.name === '.git') continue;
-      copyDir(s, d);
+      if (skipTop.has(entry.name)) continue;
+      copyTree(s, d);
     } else {
       fs.copyFileSync(s, d);
     }
   }
+}
+
+/** Copies a whole tree, skipping only `node_modules` and `.git`. */
+function copyTree(src: string, dest: string) {
+  copyDir(src, dest, new Set(['node_modules', '.git']));
 }

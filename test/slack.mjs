@@ -18,9 +18,10 @@
  * The Slack channel without Slack: trigger rules, session keys, per-thread
  * serialization, and full turns against the real echo app (server- and
  * client-managed) streamed into a recording Reply. The channel's bridge and
- * turn modules are compiled first (see the `test:slack` npm script).
+ * turn modules are compiled to `test/.build/` first by
+ * test/build-channel-units.mjs.
  *
- *   npm run test:slack
+ *   npm run test:units
  */
 
 import path from 'node:path';
@@ -34,8 +35,8 @@ import {
   stripMention,
   truncate,
   uuidv5,
-} from '../channels/slack-socket/dist/bridge.js';
-import { FAILURE_MESSAGE, runTurn } from '../channels/slack-socket/dist/turn.js';
+} from './.build/slack-socket/bridge.js';
+import { FAILURE_MESSAGE, runTurn } from './.build/slack-socket/turn.js';
 import { initChannel } from '../dist/index.js';
 import { check, run } from './helpers.mjs';
 

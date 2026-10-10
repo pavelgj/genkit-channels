@@ -19,8 +19,8 @@
  * stripping, truncation, message gathering). No network, no discord.js.
  *
  * The Discord channel is written in TypeScript; the bridge is compiled to
- * `channels/discord/dist/bridge.js` first (see the `test` npm script), which is
- * what we import here.
+ * `test/.build/discord/` first by test/build-channel-units.mjs (see the
+ * `test:units` npm script).
  *
  *   node test/discord-bridge.mjs
  */
@@ -32,7 +32,7 @@ import {
   stripMention,
   truncate,
   uuidv5,
-} from '../channels/discord/dist/bridge.js';
+} from './.build/discord/bridge.js';
 
 
 let failures = 0;

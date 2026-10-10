@@ -9,3 +9,5 @@ channels/*/package-lock.json
 # Scratch symlink to the linked genkit source (machine-specific).
 scratch/
 
+# Unit-test builds of channel modules (test/build-channel-units.mjs).
+test/.build/
