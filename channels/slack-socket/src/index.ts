@@ -82,8 +82,19 @@ async function main(): Promise<void> {
     token: channel.secret('SLACK_BOT_TOKEN'),
     appToken: channel.secret('SLACK_APP_TOKEN'),
     socketMode: true,
-    logLevel: LogLevel.WARN,
+    // SLACK_DEBUG=1 also turns on Bolt's own (very chatty) socket logging.
+    logLevel: process.env.SLACK_DEBUG ? LogLevel.DEBUG : LogLevel.WARN,
   });
+
+  // SLACK_DEBUG=1: log every payload Slack delivers, before any filtering.
+  // The quickest way to tell "Slack sends nothing" (app config) from "we
+  // ignore it" (trigger rules).
+  if (process.env.SLACK_DEBUG) {
+    app.use(async ({ body, next }) => {
+      log(`raw: ${JSON.stringify(body).slice(0, 600)}`);
+      await next();
+    });
+  }
 
   // Threads the bot has answered in, for `followThreads`. In memory: after a
   // restart the bot needs a fresh @mention to pick a thread back up (the

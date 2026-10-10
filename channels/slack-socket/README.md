@@ -37,6 +37,34 @@ SLACK_APP_TOKEN=xapp-...
 
 If you change scopes or events later, Slack asks you to reinstall the app.
 
+### Created the app by hand instead?
+
+Check these, since the manifest normally sets them:
+
+- **Socket Mode**: enabled.
+- **Event Subscriptions**: on, with bot events `app_mention`, `message.im`,
+  `message.channels` (public channels) and `message.groups` (private
+  channels). Without the `message.*` events, follow-up replies in a thread
+  (no @mention) and DMs never reach the bot.
+- **App Home**: Messages Tab on, with "Allow users to send messages" checked.
+- **App Home > Always Show My Bot as Online**: on, if you want the green dot.
+  Socket Mode connections don't set presence; this is a static setting
+  (`always_online` in the manifest), so the bot looks online even while the
+  channel isn't running.
+
+### Nothing happens?
+
+Run with `SLACK_DEBUG=1` to log every payload Slack delivers, before any
+filtering:
+
+```bash
+SLACK_DEBUG=1 genkit-channel deploy slack-bot --local
+```
+
+No `raw:` lines when you message the bot means Slack isn't sending events
+(check Event Subscriptions and that the bot is in the channel). `raw:` lines
+without a `turn start` mean the bot saw them and chose to ignore them.
+
 ## Configure
 
 ```yaml
