@@ -31,6 +31,8 @@ import {
   MAX_MARKDOWN_LEN,
   mentionTrigger,
   messageTrigger,
+  missedMessages,
+  ThreadTracker,
   sessionKey,
   stripMention,
   truncate,
@@ -44,7 +46,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const echoApp = path.join(here, 'fixtures', 'echo-app.mjs');
 const BOT = 'UBOT';
 
-function bridge() {
+async function bridge() {
   check('stripMention removes <@BOT>', stripMention(`<@${BOT}> hi`, BOT) === 'hi');
   check('stripMention removes labelled mentions', stripMention(`hey <@${BOT}|genkit>`, BOT) === 'hey');
   check('stripMention keeps other users', stripMention(`<@UOTHER> hi`, BOT) === '<@UOTHER> hi');
@@ -57,37 +59,136 @@ function bridge() {
   check('mention at top level threads under the message', t1?.threadTs === '100.1' && t1.text === 'weather?');
   const t2 = mentionTrigger({ ...base, threadTs: '99.0', text: `<@${BOT}> and now?` }, BOT);
   check('mention in a thread stays in that thread', t2?.threadTs === '99.0');
-  check('empty mention is ignored', !mentionTrigger({ ...base, text: `<@${BOT}>` }, BOT));
+  check('bare top-level mention is ignored', !mentionTrigger({ ...base, text: `<@${BOT}>` }, BOT));
+  const bare = mentionTrigger({ ...base, threadTs: '99.0', text: `<@${BOT}> ` }, BOT);
+  check('bare mention in a thread catches up', bare?.catchUp === true && bare.threadTs === '99.0');
   check('bot messages are ignored', !mentionTrigger({ ...base, botId: 'B1', text: `<@${BOT}> hi` }, BOT));
   check('own messages are ignored', !mentionTrigger({ ...base, user: BOT, text: `<@${BOT}> hi` }, BOT));
 
   const followed = new Set(['99.0']);
   const opts = { botUserId: BOT, followThreads: true, isFollowed: (t) => followed.has(t) };
-  const msg = (extra) => messageTrigger({ ...base, ...extra }, opts);
-  const dm = msg({ channel: 'D1', channelType: 'im', text: 'hello' });
+  const msg = async (extra) => messageTrigger({ ...base, ...extra }, opts);
+  const dm = await msg({ channel: 'D1', channelType: 'im', text: 'hello' });
   check('DMs trigger, threaded under the message', dm?.threadTs === '100.1' && dm.text === 'hello');
   check(
     'DM thread replies continue that thread',
-    msg({ channel: 'D1', channelType: 'im', threadTs: '50.0', text: 'more' })?.threadTs === '50.0'
+    (await msg({ channel: 'D1', channelType: 'im', threadTs: '50.0', text: 'more' }))?.threadTs === '50.0'
   );
-  check('channel chatter is ignored', !msg({ channelType: 'channel', text: 'chatter' }));
+  check('channel chatter is ignored', !(await msg({ channelType: 'channel', text: 'chatter' })));
   check(
     'channel mentions are left to app_mention (no double reply)',
-    !msg({ channelType: 'channel', threadTs: '99.0', text: `<@${BOT}> hi` })
+    !(await msg({ channelType: 'channel', threadTs: '99.0', text: `<@${BOT}> hi` }))
   );
   check(
     'replies in a followed thread trigger',
-    msg({ channelType: 'channel', threadTs: '99.0', text: 'and tomorrow?' })?.threadTs === '99.0'
+    (await msg({ channelType: 'channel', threadTs: '99.0', text: 'and tomorrow?' }))?.threadTs === '99.0'
   );
-  check('replies in other threads are ignored', !msg({ channelType: 'channel', threadTs: '98.0', text: 'x' }));
+  check('replies in other threads are ignored', !(await msg({ channelType: 'channel', threadTs: '98.0', text: 'x' })));
   check(
     'followThreads: false ignores followed threads',
-    !messageTrigger(
+    !(await messageTrigger(
       { ...base, channelType: 'channel', threadTs: '99.0', text: 'x' },
       { ...opts, followThreads: false }
-    )
+    ))
   );
-  check('edits and other subtypes are ignored', !msg({ channelType: 'im', subtype: 'message_changed', text: 'x' }));
+  check('edits and other subtypes are ignored', !(await msg({ channelType: 'im', subtype: 'message_changed', text: 'x' })));
+}
+
+const BOT_ID = 'BBOT';
+const me = { userId: BOT, botId: BOT_ID };
+
+/** A fake conversations.replies that counts calls. */
+function fakeSlack(threads, { fail = false } = {}) {
+  const calls = [];
+  return {
+    calls,
+    fetchThread: async (channel, ts) => {
+      calls.push(`${channel}:${ts}`);
+      await new Promise((r) => setTimeout(r, 5));
+      return fail ? undefined : threads[`${channel}:${ts}`];
+    },
+  };
+}
+
+async function tracker() {
+  const threads = {
+    'C1:1.0': [
+      { ts: '1.0', user: 'U1', text: `<@${BOT}> hi` },
+      { ts: '1.1', user: BOT, botId: BOT_ID, text: 'hey' },
+    ],
+    'C1:2.0': [{ ts: '2.0', user: 'U1', text: 'not for the bot' }],
+    // Bot replies identified only by bot_id (e.g. some app-posted messages).
+    'C1:3.0': [{ ts: '3.0', user: 'U1' }, { ts: '3.1', botId: BOT_ID }],
+  };
+  const slack = fakeSlack(threads);
+  const t = new ThreadTracker({ fetchThread: slack.fetchThread, bot: () => me });
+
+  t.follow('C1', '9.0');
+  check('followed threads answer from memory', t.isFollowed('C1', '9.0') === true && slack.calls.length === 0);
+
+  const [a, b] = await Promise.all([t.isFollowed('C1', '1.0'), t.isFollowed('C1', '1.0')]);
+  check('unknown thread with a bot reply is followed', a === true && b === true);
+  check('concurrent lookups share one call', slack.calls.length === 1);
+  check('the answer is remembered', t.isFollowed('C1', '1.0') === true && slack.calls.length === 1);
+
+  check('unknown thread without the bot is not followed', (await t.isFollowed('C1', '2.0')) === false);
+  check('a negative answer is remembered too', t.isFollowed('C1', '2.0') === false && slack.calls.length === 2);
+  t.follow('C1', '2.0');
+  check('a later mention flips it to followed', t.isFollowed('C1', '2.0') === true);
+  check('bot_id alone identifies our replies', (await t.isFollowed('C1', '3.0')) === true);
+
+  const down = fakeSlack(threads, { fail: true });
+  const t2 = new ThreadTracker({ fetchThread: down.fetchThread, bot: () => me });
+  check('a failed read means not followed', (await t2.isFollowed('C1', '1.0')) === false);
+  check('failures are not retried per message', t2.isFollowed('C1', '1.0') === false && down.calls.length === 1);
+
+  const small = new ThreadTracker({ fetchThread: slack.fetchThread, bot: () => me, maxEntries: 2 });
+  small.follow('C', 'a');
+  small.follow('C', 'b');
+  small.follow('C', 'c');
+  check('memory is bounded (oldest forgotten)', small.isFollowed('C', 'a') instanceof Promise);
+
+  // The trigger only asks the tracker when it has to.
+  const lazy = fakeSlack(threads);
+  const t3 = new ThreadTracker({ fetchThread: lazy.fetchThread, bot: () => me });
+  const opts = { botUserId: BOT, followThreads: true, isFollowed: (ts) => t3.isFollowed('C1', ts) };
+  await messageTrigger({ channel: 'C1', channelType: 'channel', user: 'U1', ts: '5.0', text: 'top level' }, opts);
+  await messageTrigger({ channel: 'D1', channelType: 'im', user: 'U1', ts: '5.1', threadTs: '1.0', text: 'dm' }, opts);
+  await messageTrigger(
+    { channel: 'C1', channelType: 'channel', user: 'U1', ts: '5.2', threadTs: '1.0', text: `<@${BOT}> x` },
+    opts
+  );
+  check('top-level, DM and mention messages never read the thread', lazy.calls.length === 0);
+  const after = await messageTrigger(
+    { channel: 'C1', channelType: 'channel', user: 'U1', ts: '1.5', threadTs: '1.0', text: 'weather in NY?' },
+    opts
+  );
+  check('after a restart, replies in a thread the bot was in trigger', after?.text === 'weather in NY?' && lazy.calls.length === 1);
+}
+
+function catchUp() {
+  // The screenshot: a restart, two missed replies, then a bare mention.
+  const thread = [
+    { ts: '1.0', user: 'U1', text: `<@${BOT}> hi` },
+    { ts: '1.1', user: BOT, botId: BOT_ID, text: 'Hey there!' },
+    { ts: '1.2', user: 'U1', text: 'tell me a joke' },
+    { ts: '1.3', user: BOT, botId: BOT_ID, text: 'Why do programmers...' },
+    { ts: '1.4', user: 'U1', text: 'weather in new york?' },
+    { ts: '1.5', user: 'U1', subtype: 'channel_join' },
+    { ts: '1.6', user: 'U2', botId: 'BOTHER', text: 'another bot' },
+    { ts: '1.7', user: 'U2', subtype: 'thread_broadcast', text: 'yo?' },
+    { ts: '1.8', user: 'U1', text: `<@${BOT}>` },
+  ];
+  check(
+    'catch-up collects user messages since the last reply',
+    missedMessages(thread, me, '1.8') === 'weather in new york?\nyo?'
+  );
+  check('nothing missed gives empty input', missedMessages(thread.slice(0, 4), me) === '');
+  check(
+    'a thread the bot never replied in is taken whole',
+    missedMessages([{ ts: '2.0', user: 'U1', text: 'question' }, { ts: '2.1', user: 'U1', text: `<@${BOT}>` }], me, '2.1') ===
+      'question'
+  );
 }
 
 async function queue() {
@@ -197,7 +298,9 @@ async function turns() {
 }
 
 run('slack', async () => {
-  bridge();
+  await bridge();
+  await tracker();
+  catchUp();
   await queue();
   await turns();
 });

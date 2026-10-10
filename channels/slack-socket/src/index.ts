@@ -30,11 +30,16 @@ import { App, LogLevel } from '@slack/bolt';
 import { initChannel } from 'genkit-channels';
 import { createServer } from 'node:http';
 import {
+  type BotIdentity,
+  type FetchThread,
   type IncomingEvent,
   KeyedQueue,
+  type ThreadMessage,
+  ThreadTracker,
   type Trigger,
   mentionTrigger,
   messageTrigger,
+  missedMessages,
   sessionKey,
   uuidv5,
 } from './bridge.js';
@@ -96,19 +101,53 @@ async function main(): Promise<void> {
     });
   }
 
-  // Threads the bot has answered in, for `followThreads`. In memory: after a
-  // restart the bot needs a fresh @mention to pick a thread back up (the
-  // conversation itself is kept, since session ids derive from the thread).
-  const followed = new Set<string>();
   const clientState: ClientStateStore = new Map();
   const queue = new KeyedQueue();
   let team = '';
-  let botUserId: string | undefined;
+  const bot: BotIdentity = {};
+
+  /**
+   * Reads a thread, oldest first. One call covers threads up to Slack's
+   * default page size (1000 messages); longer ones are judged by that page.
+   * Failures (rate limits included) log and return undefined, so callers fall
+   * back to "not followed" instead of failing the event.
+   */
+  const fetchThread: FetchThread = async (channelId, threadTs) => {
+    try {
+      const res = await app.client.conversations.replies({ channel: channelId, ts: threadTs });
+      return (res.messages ?? []).flatMap((m): ThreadMessage[] =>
+        m.ts
+          ? [
+              {
+                ts: m.ts,
+                user: m.user,
+                botId: m.bot_id,
+                // Present on the wire, missing from the SDK's response type.
+                subtype: 'subtype' in m && typeof m.subtype === 'string' ? m.subtype : undefined,
+                text: m.text,
+              },
+            ]
+          : []
+      );
+    } catch (e) {
+      log(`could not read thread ${threadTs} in ${channelId}: ${(e as Error).message}`);
+      return undefined;
+    }
+  };
+
+  // Threads the bot takes part in, for `followThreads`. Unknown threads are
+  // checked against Slack once, so following survives restarts.
+  const threads = new ThreadTracker({ fetchThread, bot: () => bot });
+
+  const say = (target: ReplyTarget, text: string) =>
+    app.client.chat
+      .postMessage({ channel: target.channel, thread_ts: target.threadTs, text })
+      .catch((e: Error) => log(`could not post to thread ${target.threadTs}: ${e.message}`));
 
   function handle(ev: IncomingEvent, trigger: Trigger, eventTeam?: string) {
     const teamId = eventTeam || team;
     const key = sessionKey(teamId, ev.channel, trigger.threadTs);
-    followed.add(`${ev.channel}:${trigger.threadTs}`);
+    threads.follow(ev.channel, trigger.threadTs);
     const target: ReplyTarget = {
       channel: ev.channel,
       threadTs: trigger.threadTs,
@@ -116,8 +155,23 @@ async function main(): Promise<void> {
       team: teamId,
     };
     const sessionId = uuidv5(key);
-    // One turn at a time per thread; queued messages run in order.
+    // One turn at a time per thread; queued messages run in order. Catch-up
+    // reads the thread inside the queue, so it sees replies to earlier turns.
     return queue.run(key, async () => {
+      let input = trigger.text;
+      if (trigger.catchUp) {
+        const thread = await fetchThread(ev.channel, trigger.threadTs);
+        if (!thread) {
+          await say(target, "I couldn't read this thread. Mention me again with your message.");
+          return;
+        }
+        input = missedMessages(thread, bot, ev.ts);
+        if (!input) {
+          await say(target, "I'm here. Nothing new since my last reply, so go ahead and ask.");
+          return;
+        }
+        log(`catching up in thread ${trigger.threadTs}`);
+      }
       const started = Date.now();
       log(`turn start: thread ${trigger.threadTs}`);
       const res = await runTurn({
@@ -127,7 +181,7 @@ async function main(): Promise<void> {
         agentState,
         sessionKey: key,
         sessionId,
-        input: trigger.text,
+        input,
         reply:
           streamMode === 'edit'
             ? editReply(app.client, target, editIntervalMs)
@@ -154,8 +208,11 @@ async function main(): Promise<void> {
       ts: event.ts,
       threadTs: event.thread_ts,
     };
-    const trigger = mentionTrigger(ev, context.botUserId ?? botUserId);
-    log(`app_mention in ${ev.channel} from ${ev.user ?? '?'}${trigger ? '' : ' (ignored)'}`);
+    const trigger = mentionTrigger(ev, context.botUserId ?? bot.userId);
+    log(
+      `app_mention in ${ev.channel} from ${ev.user ?? '?'}` +
+        (trigger ? (trigger.catchUp ? ' (bare, catching up)' : '') : ' (ignored)')
+    );
     if (trigger) void handle(ev, trigger, context.teamId);
   });
 
@@ -171,19 +228,23 @@ async function main(): Promise<void> {
       ts: message.ts,
       threadTs: message.thread_ts,
     };
-    const trigger = messageTrigger(ev, {
-      botUserId: context.botUserId ?? botUserId,
-      followThreads,
-      isFollowed: (threadTs) => followed.has(`${ev.channel}:${threadTs}`),
-    });
-    // Channel chatter is the common case; only log what we act on, and DMs.
-    if (trigger || ev.channelType === 'im') {
-      log(
-        `message (${ev.channelType}) in ${ev.channel} from ${ev.user ?? '?'}` +
-          (trigger ? '' : ' (ignored)')
-      );
-    }
-    if (trigger) void handle(ev, trigger, context.teamId);
+    // Deciding may read the thread from Slack (unknown thread after a
+    // restart), so it runs in the background too, not before the ack.
+    void (async () => {
+      const trigger = await messageTrigger(ev, {
+        botUserId: context.botUserId ?? bot.userId,
+        followThreads,
+        isFollowed: (threadTs) => threads.isFollowed(ev.channel, threadTs),
+      });
+      // Channel chatter is the common case; only log what we act on, and DMs.
+      if (trigger || ev.channelType === 'im') {
+        log(
+          `message (${ev.channelType}) in ${ev.channel} from ${ev.user ?? '?'}` +
+            (trigger ? '' : ' (ignored)')
+        );
+      }
+      if (trigger) await handle(ev, trigger, context.teamId);
+    })().catch((e: Error) => log(`message handling failed: ${e.message}`));
   });
 
   app.error(async (error) => {
@@ -208,7 +269,8 @@ async function main(): Promise<void> {
   try {
     const auth = await app.client.auth.test();
     team = auth.team_id ?? '';
-    botUserId = auth.user_id;
+    bot.userId = auth.user_id;
+    bot.botId = auth.bot_id;
     // A token missing scopes connects fine but never sees the events it needs.
     const granted = auth.response_metadata?.scopes ?? [];
     const missing = REQUIRED_SCOPES.filter((s) => !granted.includes(s));
@@ -220,7 +282,7 @@ async function main(): Promise<void> {
     }
     await app.start();
     ready = true;
-    log(`ready as @${auth.user} in ${auth.team} (bot user ${botUserId})`);
+    log(`ready as @${auth.user} in ${auth.team} (bot user ${bot.userId})`);
     log(
       'waiting for events. If nothing shows up when you @mention or DM the ' +
         'bot, check Event Subscriptions (app_mention, message.im, ' +

@@ -11,7 +11,11 @@ What the bot does:
   is its own conversation (and agent session).
 - **DM**: each message starts a thread; replies in that thread continue it.
 - **Replies in a thread it answered in** (`followThreads`, on by default):
-  keeps answering without another @mention.
+  keeps answering without another @mention. This survives restarts: for a
+  thread it doesn't know yet, the bot reads it once from Slack to see whether
+  it replied there.
+- **A bare @mention in a thread** ("@bot" and nothing else): answers whatever
+  people posted since its last reply, as one message. Handy after downtime.
 
 Replies stream with Slack's native text streaming, with an "is thinking..."
 status until the first words arrive.
@@ -84,9 +88,14 @@ deployments:
 
 - **One instance.** Every instance opens its own Socket Mode connection and
   Slack spreads events across them; keep `maxInstances: 1`.
-- **Followed threads are in memory.** After a restart the bot needs a fresh
-  @mention to pick a thread back up. The conversation itself is kept (the
-  session id comes from the thread), as long as the agent's store survives.
+- **Thread lookups.** Following a thread after a restart, and bare-mention
+  catch-up, call `conversations.replies` (at most once per unknown thread per
+  process, plus once per bare mention). Internal apps keep Slack's normal
+  Tier 3 limit; commercially distributed non-Marketplace apps get much lower
+  limits for this method since May 2025. If a lookup fails (rate limited or
+  otherwise) the bot just doesn't follow that thread until the next @mention.
+- **The conversation itself** is kept across restarts (the session id comes
+  from the thread), as long as the agent's store survives.
 - **Messages in one thread run one at a time**, in order. Different threads
   run in parallel.
 - **Streaming**: if your workspace doesn't support native streaming

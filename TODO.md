@@ -52,9 +52,9 @@ inline.
   `access: public`). Share `bridge.ts` / `turn.ts` / `slack-reply.ts` with
   `slack-socket` once it exists. Also consider Slack's agent side panel
   (Assistant class: suggested prompts, thread titles).
-- [ ] **slack-socket: followed threads are in memory** (lost on restart; not
-  shared across instances). Could be derived from `conversations.replies`
-  on demand instead.
+- [x] **slack-socket: followed threads survive restarts** (looked up via
+  `conversations.replies` on demand; bare @mention catches up on missed
+  messages).
 - [ ] **Go channels.** Removed `http-go`; bring Go channels back as a clean
   port once there is a Go genkit-in-a-box. (Go *apps* still work: they only
   need to honor the reflection env vars.)
