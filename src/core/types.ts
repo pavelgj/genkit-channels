@@ -32,7 +32,7 @@ import type { DeploymentSecrets, ResolvedSecret } from './secrets';
 /**
  * A channel name is a free-form string mapping to a directory under
  * `.genkit/channels/<name>/`. Channels are pluggable and fetched with
- * `genkit-channels add`.
+ * `genkit-channel add`.
  */
 export type ChannelName = string;
 
@@ -421,7 +421,7 @@ export interface ComposePlan {
   channelConfig: ChannelConfigInput;
   /**
    * The channel config with the app located at `appDir` instead of the staged
-   * `user/` copy. `--local` uses this to run the original project in place.
+   * `user/` copy. `dev` uses this to run the original project in place.
    */
   channelConfigFor(appDir: string): ChannelConfigInput;
 }

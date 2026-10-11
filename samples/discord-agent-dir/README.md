@@ -51,7 +51,7 @@ genkit-channel add ../../channels discord
 ## Run it locally
 
 ```bash
-genkit-channel deploy discord-bot --local
+genkit-channel dev discord-bot
 ```
 
 This spawns the built-in agent-dir runtime as a headless child and connects the
@@ -86,5 +86,5 @@ the deployment in `channels.yaml`:
     region: us-central1
 ```
 
-then run `genkit-channel deploy discord-bot` (without `--local`). Set
+then run `genkit-channel deploy discord-bot`. Set
 `DISCORD_TOKEN` and your model key as service env vars or secrets on the target.

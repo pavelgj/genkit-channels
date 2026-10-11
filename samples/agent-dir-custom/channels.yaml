@@ -11,7 +11,7 @@
 #
 #   genkit-channel add ../../channels http-ts
 #   npm install
-#   . ~/init-gemini.sh && genkit-channel deploy weather --local
+#   . ~/init-gemini.sh && genkit-channel dev weather
 #
 deployments:
   - name: weather

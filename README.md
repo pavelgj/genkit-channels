@@ -19,14 +19,14 @@ For the rationale, architecture, and open questions, see
 # from this repo, for local development
 pnpm install
 pnpm build
-npm link            # exposes the `genkit-channels` binary on your PATH
+npm link            # exposes `genkit-channel` (alias `genkit-channels`) on your PATH
 ```
 
 ## Concepts
 
 - **Channel**: a small Node program that maps a transport onto a Genkit app's
   actions. Channels live under `.genkit/channels/<name>/` in your project and are
-  installed with `genkit-channels add`.
+  installed with `genkit-channel add`.
 - **Channel manifest** (`channel.yaml`): written by the channel author.
   Entry point, build step, env vars the channel needs, recommended service
   settings, validation rules.
@@ -37,26 +37,29 @@ npm link            # exposes the `genkit-channels` binary on your PATH
 - **Helper library** (`initChannel`): what a channel calls to get proxies for
   your app's agents and flows.
 
+In these docs a bare "channel" always means the above. Slack and Discord
+channels are always called "Slack channel" or "Discord channel".
+
 ## CLI
 
 ```bash
 # install channels from a source (owner/repo, GitHub URL, or local path)
-genkit-channels add ./channels
-genkit-channels add ./channels http      # just one
-genkit-channels add owner/repo#main --dir channels
+genkit-channel add ./channels
+genkit-channel add ./channels http      # just one
+genkit-channel add owner/repo#main --dir channels
 
-genkit-channels list
-genkit-channels remove http
-genkit-channels update [name]
+genkit-channel list
+genkit-channel remove http
+genkit-channel update [name]
 
-# compose + run a deployment locally (no container)
-genkit-channels deploy <name> --local
+# run a deployment locally (no container); the name is optional with one deployment
+genkit-channel dev <name>
 
 # compose the staging dir only
-genkit-channels deploy <name> --build-only
+genkit-channel deploy <name> --build-only
 
 # compose + ship to a target (e.g. Cloud Run)
-genkit-channels deploy <name>
+genkit-channel deploy <name>
 ```
 
 ### channels.yaml
@@ -108,7 +111,7 @@ Channel secrets go to the channel process only; app secrets go to the app
 only. The box config is generated from that, so you don't repeat names in
 `box.env`.
 
-**Locally** (`deploy --local`), values come from `.env` files in the project,
+**Locally** (`dev`), values come from `.env` files in the project,
 later files winning: `.env`, `.env.local`, `.env.<deployment>`,
 `.env.<deployment>.local`. Variables already set in your shell win over all of
 them. Keep real values in the `*.local` files and gitignore them. A missing

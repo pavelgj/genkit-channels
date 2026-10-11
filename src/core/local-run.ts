@@ -1,0 +1,202 @@
+/**
+ * Copyright 2025 Google LLC
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+/**
+ * Runs a composed deployment on the host (no container). Backs
+ * `genkit-channel dev`.
+ */
+
+import { spawn, spawnSync } from 'child_process';
+import fs from 'fs';
+import path from 'path';
+import { linkLocalLibrary } from '../util/local-library';
+import { logger } from '../util/logger';
+import { readChannelLock } from './channels/install';
+import {
+  dotenvFiles,
+  formatSecretList,
+  loadDotenv,
+  missingSecrets,
+} from './secrets';
+import type { ComposePlan } from './types';
+
+/**
+ * Runs the composed channel on the host (no container).
+ *
+ * Secrets and other env come from the shell plus the project's `.env` files
+ * (`.env`, `.env.local`, `.env.<deployment>`, `.env.<deployment>.local`; the
+ * shell wins). Every declared secret must be present before we start.
+ *
+ * Two adjustments vs the container path make local iteration fast:
+ *  - install the staged channel's own deps if missing (the container does this
+ *    via a Dockerfile RUN; locally we do it lazily), and
+ *  - box the *original* project (not the copied `user/`), so its existing
+ *    node_modules and build output are reused. The app must already be built
+ *    (run its build once); we do not build it here.
+ */
+export async function runLocal(
+  projectRoot: string,
+  deploymentName: string,
+  plan: ComposePlan
+): Promise<void> {
+  const { stagingDir, channel, runtime, usingAgentDir } = plan;
+
+  // Local values come from .env files (the shell wins). Check every declared
+  // secret up front rather than failing on the first message.
+  const dotenv = loadDotenv(projectRoot, deploymentName);
+  const env: NodeJS.ProcessEnv = { ...dotenv.values, ...process.env };
+  if (dotenv.files.length > 0) {
+    logger.info(`Loaded ${dotenv.files.join(', ')}`);
+  }
+  const missing = missingSecrets(plan.secrets, env);
+  if (missing.length > 0) {
+    const [, local, , deploymentLocal] = dotenvFiles(deploymentName);
+    throw new Error(
+      `Missing secrets:\n${formatSecretList(missing)}\n` +
+        `Add them to ${local} (or ${deploymentLocal}), or set them in your shell.`
+    );
+  }
+
+  // `dev` never builds the channel: building runs channel code, which `add`
+  // only does after you confirm. So a channel that builds must have been
+  // built at install time; say so plainly instead of a MODULE_NOT_FOUND.
+  const def = channel.definition;
+  if (!fs.existsSync(path.join(stagingDir, channel.entryFromStaging))) {
+    // The install dir name (what `add` and the lock use), not `name:` from
+    // channel.yaml, which may differ.
+    const installed = path.basename(def.dir);
+    const lock = readChannelLock(projectRoot, installed);
+    const source = lock?.source ?? '<source>';
+    throw new Error(
+      `Channel "${def.name}" isn't built (${def.entry} is missing).` +
+        (def.build
+          ? ` Build it with:\n` +
+            `  genkit-channel add ${source} ${installed} --force --yes\n` +
+            `or in place:\n` +
+            `  cd ${path.relative(process.cwd(), def.dir) || '.'} && ${def.build}`
+          : ` Reinstall it: genkit-channel add ${source} ${installed} --force`)
+    );
+  }
+
+  ensureChannelDeps(path.join(stagingDir, 'channel'));
+
+  // Where the app lives. For a real runtime we box the *original* project so
+  // its node_modules / build output are reused. For the built-in agent-dir
+  // runtime there is no user project to run: the app was synthesized into the
+  // staging `user/` dir, so run (and install deps) there.
+  let appDir: string;
+  if (usingAgentDir) {
+    appDir = path.join(stagingDir, 'user');
+    ensureAgentDirDeps(appDir);
+  } else {
+    appDir = projectRoot;
+  }
+
+  const localConfig = plan.channelConfigFor(appDir);
+  const localConfigPath = path.join(stagingDir, 'channel.local.json');
+  fs.writeFileSync(localConfigPath, JSON.stringify(localConfig, null, 2) + '\n');
+
+  const runner = localConfig.box?.runner;
+  logger.info(
+    `\nRunning locally from ${stagingDir}\n` +
+      `  app: ${runtime.command} ${runtime.args.join(' ')} ` +
+      `(cwd: ${path.join(appDir, runtime.cwd)})\n` +
+      `  box: ${runner?.type ?? 'exec'}, route ${localConfig.box?.route ?? 'app'}` +
+      ` (starts on first use)\n`
+  );
+
+  return new Promise((resolve, reject) => {
+    const child = spawn('node', [channel.entryFromStaging], {
+      cwd: stagingDir,
+      env: {
+        ...env,
+        GENKIT_CHANNEL_CONFIG: localConfigPath,
+      },
+      stdio: 'inherit',
+    });
+    // Forward termination so the channel can close its boxes. A terminal
+    // Ctrl-C reaches the whole process group anyway, but a supervisor or
+    // `kill` only signals us.
+    const forward = (signal: NodeJS.Signals) => () => {
+      if (child.exitCode === null) child.kill(signal);
+    };
+    const onInt = forward('SIGINT');
+    const onTerm = forward('SIGTERM');
+    process.on('SIGINT', onInt);
+    process.on('SIGTERM', onTerm);
+    child.on('error', reject);
+    child.on('exit', (code) => {
+      process.off('SIGINT', onInt);
+      process.off('SIGTERM', onTerm);
+      if (code === 0 || code === null) resolve();
+      else reject(new Error(`channel exited with code ${code}`));
+    });
+  });
+}
+
+/**
+ * Installs the synthesized agent-dir app's npm deps for a local run. The app was
+ * generated into the staging `user/` dir by compose; here we `npm install` so
+ * `node index.mjs` can resolve genkit + the middleware/model plugins. Skipped if
+ * node_modules already exists.
+ */
+function ensureAgentDirDeps(appDir: string) {
+  const pkgPath = path.join(appDir, 'package.json');
+  if (!fs.existsSync(pkgPath)) return;
+  if (fs.existsSync(path.join(appDir, 'node_modules'))) return;
+
+  // The generated app depends on `genkit-channels`; point it at this checkout
+  // until the library is published (a no-op once it is).
+  linkLocalLibrary(pkgPath);
+
+  logger.info(`Installing agent-dir runtime dependencies in ${appDir} ...`);
+  const res = spawnSync('npm', ['install', '--no-audit', '--no-fund'], {
+    cwd: appDir,
+    stdio: 'inherit',
+    shell: process.platform === 'win32',
+  });
+  if (res.status !== 0) {
+    throw new Error('failed to install agent-dir runtime dependencies.');
+  }
+}
+
+/** Installs the staged channel's npm deps if they are not present yet. */
+function ensureChannelDeps(channelDir: string) {
+  const pkgPath = path.join(channelDir, 'package.json');
+  const hasPkg = fs.existsSync(pkgPath);
+  const hasModules = fs.existsSync(path.join(channelDir, 'node_modules'));
+  if (!hasPkg || hasModules) return;
+
+  // The bundled channels depend on `genkit-channels` (this package) for the
+  // helper library. It is not published to npm yet, so for local runs we point
+  // the dependency at this package on disk and let npm link it. When the library
+  // is published this rewrite becomes a no-op.
+  linkLocalLibrary(pkgPath);
+
+  logger.info(`Installing channel dependencies in ${channelDir} ...`);
+  const res = spawnSync(
+    'npm',
+    ['install', '--omit=dev', '--no-audit', '--no-fund'],
+    {
+      cwd: channelDir,
+      stdio: 'inherit',
+      shell: process.platform === 'win32',
+    }
+  );
+  if (res.status !== 0) {
+    throw new Error('failed to install channel dependencies (npm install).');
+  }
+}

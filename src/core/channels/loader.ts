@@ -75,7 +75,7 @@ export function loadChannel(
   if (!fs.existsSync(manifestPath)) {
     throw new Error(
       `Channel "${name}" is not installed. Install it with:\n` +
-        `  genkit-channels add <source> ${name}`
+        `  genkit-channel add <source> ${name}`
     );
   }
 

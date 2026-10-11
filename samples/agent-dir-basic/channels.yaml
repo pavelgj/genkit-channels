@@ -9,7 +9,7 @@
 #
 #   genkit-channel add ../../channels http
 #   echo 'GEMINI_API_KEY=...' > .env.local
-#   genkit-channel deploy assistant --local
+#   genkit-channel dev assistant
 #
 deployments:
   - name: assistant

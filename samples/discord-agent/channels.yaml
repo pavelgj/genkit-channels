@@ -6,8 +6,8 @@
 #
 # then run one locally:
 #
-#   genkit-channel deploy discord-bot --local
-#   genkit-channel deploy slack-bot --local
+#   genkit-channel dev discord-bot
+#   genkit-channel dev slack-bot
 #
 deployments:
   - name: discord-bot

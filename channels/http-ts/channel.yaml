@@ -11,7 +11,7 @@ language: node
 # not exist on disk until the build has run.
 entry: dist/index.js
 # Build command run in the channel dir to produce `entry`. When the channel is
-# installed with `genkit-channels add`, this runs after you confirm; it also runs
+# installed with `genkit-channel add`, this runs after you confirm; it also runs
 # in the container image build. `npm install` (not `--omit=dev`) so the
 # TypeScript compiler in devDependencies is available.
 build: npm install && npm run build

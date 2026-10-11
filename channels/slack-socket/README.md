@@ -7,7 +7,7 @@ Good for local development, and on Cloud Run it runs as a warm private service.
 
 What the bot does:
 
-- **@mention in a channel**: replies in a thread under the message. Each thread
+- **@mention in a Slack channel**: replies in a thread under the message. Each thread
   is its own conversation (and agent session).
 - **DM**: each message starts a thread; replies in that thread continue it.
 - **Replies in a thread it answered in** (`followThreads`, on by default):
@@ -30,7 +30,7 @@ status until the first words arrive.
    is `SLACK_APP_TOKEN`.
 3. **Install App**, **Install to Workspace**, allow. Copy the **Bot User OAuth
    Token** (`xoxb-...`): this is `SLACK_BOT_TOKEN`.
-4. In Slack, invite the bot to a channel: `/invite @Genkit Agent`.
+4. In Slack, invite the bot to a Slack channel: `/invite @Genkit Agent`.
 
 Put both tokens in your project's `.env.local`:
 
@@ -62,11 +62,11 @@ Run with `SLACK_DEBUG=1` to log every payload Slack delivers, before any
 filtering:
 
 ```bash
-SLACK_DEBUG=1 genkit-channel deploy slack-bot --local
+SLACK_DEBUG=1 genkit-channel dev slack-bot
 ```
 
 No `raw:` lines when you message the bot means Slack isn't sending events
-(check Event Subscriptions and that the bot is in the channel). `raw:` lines
+(check Event Subscriptions and that the bot is in the Slack channel). `raw:` lines
 without a `turn start` mean the bot saw them and chose to ignore them.
 
 ## Configure

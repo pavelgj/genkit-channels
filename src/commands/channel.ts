@@ -18,7 +18,7 @@
  * Channel management commands: install and manage channels fetched from a source
  * repo or local path into `.genkit/channels/`.
  *
- * Exposed as top-level commands: `genkit-channels add|list|remove|update`.
+ * Exposed as top-level commands: `genkit-channel add|list|remove|update`.
  */
 
 import { Command } from 'commander';
@@ -181,7 +181,7 @@ export const list = new Command('list')
     if (names.length === 0) {
       logger.info(
         `No channels installed in ${channelsRoot(projectRoot)}. ` +
-          `Add one with: genkit-channels add <source>`
+          `Add one with: genkit-channel add <source>`
       );
       return;
     }

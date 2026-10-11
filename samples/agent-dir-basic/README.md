@@ -26,11 +26,11 @@ Models "just work" once an API key is set. Google AI (Gemini) needs
 `ANTHROPIC_API_KEY`. Only providers with a key present are registered.
 
 ```bash
-# Install the HTTP (TypeScript) channel into this project.
-genkit-channel add ../../channels http-ts
+# Install the HTTP channel into this project.
+genkit-channel add ../../channels http
 
 # Run locally (no container). Loads the API key from your shell.
-. ~/init-gemini.sh && genkit-channel deploy assistant --local
+. ~/init-gemini.sh && genkit-channel dev assistant
 ```
 
 Then, in another terminal:
@@ -39,12 +39,12 @@ Then, in another terminal:
 # Non-streaming turn.
 curl -s localhost:8080/assistant \
   -H 'content-type: application/json' \
-  -d '{"data":{"message":{"role":"user","content":[{"text":"hello!"}]}}}'
+  -d '{"message":"hello!"}'
 
 # Ask it to use the pirate skill.
 curl -s localhost:8080/assistant \
   -H 'content-type: application/json' \
-  -d '{"data":{"message":{"role":"user","content":[{"text":"talk like a pirate"}]}}}'
+  -d '{"message":"talk like a pirate"}'
 ```
 
 ## Customizing

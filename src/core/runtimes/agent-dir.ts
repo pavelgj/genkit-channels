@@ -23,7 +23,7 @@
  * app into the staging `user/` dir as an ordinary JS runtime: an `index.mjs`
  * that calls `loadAgentDir` plus a `package.json` with the needed deps, and a
  * copy of the agents folder. Everything downstream (js dockerfile, single vs
- * sidecar packaging, `--local`) then treats it like any other JS app.
+ * sidecar packaging, `dev`) then treats it like any other JS app.
  */
 
 import fs from 'fs';

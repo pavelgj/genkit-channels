@@ -12,8 +12,8 @@
   ],
   "type": "commonjs",
   "bin": {
-    "genkit-channel": "dist/bin/genkit-channels.js",
-    "genkit-channels": "dist/bin/genkit-channels.js"
+    "genkit-channel": "dist/bin/genkit-channel.js",
+    "genkit-channels": "dist/bin/genkit-channel.js"
   },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

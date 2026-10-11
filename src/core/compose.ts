@@ -131,7 +131,7 @@ export async function compose(
   fs.mkdirSync(stagingDir, { recursive: true });
 
   // 1) Copy the channel. Keep the channel's build output (e.g. a TypeScript
-  // channel's `dist/`) so an install-time build is not thrown away: `--local`
+  // channel's `dist/`) so an install-time build is not thrown away: `dev`
   // runs the copied source directly, and the container build re-runs the build
   // anyway. (The user app copy below still drops generated dirs.)
   const channelDest = path.join(stagingDir, 'channel');

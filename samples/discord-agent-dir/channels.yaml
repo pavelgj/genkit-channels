@@ -9,7 +9,7 @@
 #
 #   genkit-channel add ../../channels discord
 #   cp .env.example .env   # fill in DISCORD_TOKEN + GEMINI_API_KEY
-#   genkit-channel deploy discord-bot --local
+#   genkit-channel dev discord-bot
 #
 deployments:
   - name: discord-bot

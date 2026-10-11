@@ -58,6 +58,42 @@ export function findManifest(projectDir: string): string | null {
   return fs.existsSync(p) ? p : null;
 }
 
+export interface SelectDeploymentsOptions {
+  /** Select every deployment (the caller's `--all`). */
+  all?: boolean;
+  /** Whether the caller offers `--all`; only affects the error hint. */
+  allowAll?: boolean;
+}
+
+/**
+ * Picks deployments by name. With no name, a single-deployment manifest picks
+ * that one. Returns (not throws) the error so callers control how it is
+ * reported.
+ */
+export function selectDeployments(
+  deployments: DeploymentManifest[],
+  name: string | undefined,
+  { all = false, allowAll = false }: SelectDeploymentsOptions = {}
+): DeploymentManifest[] | Error {
+  if (all) return deployments;
+  if (!name) {
+    if (deployments.length === 1) return deployments;
+    return new Error(
+      `Multiple deployments defined. Specify a name` +
+        `${allowAll ? ' or use --all' : ''}. ` +
+        `Available: ${deployments.map((d) => d.name).join(', ')}`
+    );
+  }
+  const match = deployments.find((d) => d.name === name);
+  if (!match) {
+    return new Error(
+      `No deployment named "${name}". ` +
+        `Available: ${deployments.map((d) => d.name).join(', ')}`
+    );
+  }
+  return [match];
+}
+
 /** Loads and validates the manifest. Throws on malformed input. */
 export function loadManifest(projectDir: string): DeployConfig {
   const manifestPath = findManifest(projectDir);

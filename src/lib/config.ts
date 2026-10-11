@@ -180,7 +180,7 @@ export function loadChannelConfigFile(configPath?: string): {
   if (!fs.existsSync(resolved)) {
     throw new Error(
       `No channel config at ${resolved}. Run the channel through the CLI ` +
-        `(genkit-channel deploy <name> --local), set GENKIT_CHANNEL_CONFIG, ` +
+        `(genkit-channel dev <name>), set GENKIT_CHANNEL_CONFIG, ` +
         `or pass initChannel({ config }).`
     );
   }

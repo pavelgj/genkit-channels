@@ -46,7 +46,7 @@ package.json
 ```bash
 genkit-channel add ../../channels http-ts
 npm install
-. ~/init-gemini.sh && genkit-channel deploy weather --local
+. ~/init-gemini.sh && genkit-channel dev weather
 ```
 
 Then:
@@ -54,7 +54,7 @@ Then:
 ```bash
 curl -s localhost:8080/weatherer \
   -H 'content-type: application/json' \
-  -d '{"data":{"message":{"role":"user","content":[{"text":"what is the weather in Paris?"}]}}}'
+  -d '{"message":"what is the weather in Paris?"}'
 ```
 
 ## When to use which

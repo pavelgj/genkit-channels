@@ -16,7 +16,7 @@
 
 /**
  * Live test against Gemini, using the discord-agent sample app as written
- * (its channels.yaml compiled the way `deploy --local` does), with one box
+ * (its channels.yaml compiled the way `dev` does), with one box
  * per conversation. Checks a tool-calling agent, streaming, per-session boxes
  * resumed by snapshotId, and that the channel's secret stays out of the box.
  *

@@ -43,13 +43,13 @@ Install the Discord channel into this project (points at the channels dir in
 this repo; you can also use an `owner/repo` or a GitHub URL):
 
 ```bash
-genkit-channels add ../../channels discord
+genkit-channel add ../../channels discord
 ```
 
 ## Run it locally
 
 ```bash
-genkit-channels deploy discord-bot --local
+genkit-channel dev discord-bot
 ```
 
 This connects the bot to Discord; the app starts headless in its box on the
@@ -71,11 +71,11 @@ The same agent also runs as a Slack bot (the `slack-bot` deployment, using the
 `SLACK_BOT_TOKEN` and `SLACK_APP_TOKEN` in `.env.local`, then:
 
 ```bash
-genkit-channels add ../../channels slack-socket
-genkit-channels deploy slack-bot --local
+genkit-channel add ../../channels slack-socket
+genkit-channel dev slack-bot
 ```
 
-Mention the bot in a channel it was invited to, or DM it.
+Mention the bot in a Slack channel it was invited to, or DM it.
 
 ## How it fits together
 
@@ -148,7 +148,7 @@ the deployment in `channels.yaml`:
     region: us-central1
 ```
 
-then run `genkit-channels deploy discord-bot` (without `--local`).
+then run `genkit-channel deploy discord-bot`.
 
 `DISCORD_TOKEN` (declared by the channel) and `GEMINI_API_KEY` (declared under
 `secrets` in `channels.yaml`) are read from Secret Manager secrets of the same

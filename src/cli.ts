@@ -17,15 +17,19 @@
 import { Command, program } from 'commander';
 import { add, list, remove, update } from './commands/channel';
 import { deploy } from './commands/deploy';
+import { dev } from './commands/dev';
 import { logger } from './util/logger';
 import { version } from './version';
 
-const commands: Command[] = [add, list, remove, update, deploy];
+const commands: Command[] = [add, list, remove, update, dev, deploy];
 
-/** Main entry point for the genkit-channels CLI. */
+/**
+ * Main entry point for the `genkit-channel` CLI (`genkit-channels` is an
+ * alias; the npm package keeps the plural name).
+ */
 export async function startCLI(): Promise<void> {
   program
-    .name('genkit-channels')
+    .name('genkit-channel')
     .description(
       'Experimental CLI for exposing a Genkit app over a transport (a "channel")'
     )
