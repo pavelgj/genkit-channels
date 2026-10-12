@@ -21,6 +21,15 @@ build: npm install && npm run build
 # platform's secret store (Cloud Run: Secret Manager).
 secrets: [DISCORD_TOKEN]
 
+# Options (the deployment's `with` block), all optional:
+#   session: thread | channel    one conversation per thread (default) or
+#                                per channel
+#   includeSenderName: bool      prefix messages with "[name]:"; default true
+#                                for `session: channel`
+#   streamEditIntervalMs: 700    debounce for streamed edits
+#   coalesce: true               true: messages sent during a turn go into the
+#                                next turn together; false: one turn each
+
 # Service settings this channel recommends. A gateway bot keeps an outbound
 # WebSocket open, so it must stay warm and keep its CPU allocated even when no
 # HTTP request is in flight: `always-allocated` CPU plus a single warm instance.
@@ -37,6 +46,10 @@ recommends:
 # config, env, child). A falsy `validate` result fails the deploy; a truthy
 # `warn` result logs a warning.
 validate:
+  - expr: >-
+      $not($exists(config.coalesce)) or $type(config.coalesce) = 'boolean'
+    message: >-
+      with.coalesce must be true or false.
   # Gateway events carry no Authorization header, so it would refuse everyone.
   - expr: >-
       $not($exists(expose.contextProvider.apiKey))

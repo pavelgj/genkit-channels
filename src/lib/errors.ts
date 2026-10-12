@@ -20,7 +20,9 @@
  * A `GenkitError` thrown in the box does not arrive as a `GenkitError`: box
  * rethrows it as `BoxRuntimeError` (exec runner) or `BoxV1RuntimeError`
  * (podman/remote), both carrying the wire status as `data.code` (16 for
- * UNAUTHENTICATED, 7 for PERMISSION_DENIED, ...). These helpers read either.
+ * UNAUTHENTICATED, 7 for PERMISSION_DENIED, ...). Agent turns fail with
+ * `AgentError`, which has the status name in `status`. These helpers read
+ * all three.
  */
 
 import {
@@ -33,7 +35,14 @@ import {
 /** The status of an error from the app (or thrown locally), if it has one. */
 export function errorStatus(e: unknown): StatusName | undefined {
   if (e instanceof GenkitError) return e.status;
-  if (typeof e !== 'object' || e === null || !('data' in e)) return undefined;
+  if (typeof e !== 'object' || e === null) return undefined;
+  // Agent turns fail with `AgentError` (genkit/beta), which is not a
+  // GenkitError but carries the status name as a string.
+  if ('status' in e && typeof e.status === 'string') {
+    const parsed = StatusNameSchema.safeParse(e.status);
+    if (parsed.success) return parsed.data;
+  }
+  if (!('data' in e)) return undefined;
   const { data } = e;
   if (typeof data !== 'object' || data === null || !('code' in data)) {
     return undefined;

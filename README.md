@@ -372,6 +372,79 @@ const context = await channel.context({
 // On a refusal, isAuthError(e) is true: reply with a short "not allowed".
 ```
 
+Chat channels can use `genkit-channels/chat` for the parts every chat bot
+needs: one turn at a time per conversation with its state carried between
+turns, long replies split across messages, and failures turned into
+something a person can act on.
+
+```ts
+import { createConversations, describeFailure, messageRenderer, sessionId } from 'genkit-channels/chat';
+
+interface Msg { text: string }
+interface State { agent?: SessionState } // client-managed agents: their state
+
+// One turn at a time per thread; threads run in parallel. With `coalesce`,
+// messages that arrive during a turn are handed over together.
+const conversations = createConversations<Msg, State>({
+  coalesce: true,
+  handler: async ({ key, messages, state, signal }) => {
+    const input = messages.map((m) => m.payload.text).join('\n');
+    const agent = channel.agent(name, { sessionId: sessionId(key) });
+    // Edits the message while streaming; past 2000 characters it continues
+    // in a new one (code blocks are closed and reopened).
+    const out = messageRenderer({ post: (t) => thread.send(t), edit: (m, t) => m.edit(t) }, 2000);
+    let text = '';
+    try {
+      const turn = agent.chat({ state: state?.agent }).sendStream(input, { abortSignal: signal });
+      for await (const chunk of turn.stream) await out.render((text += chunk.text));
+      // Saved together with marking the messages handled.
+      return { state: { agent: (await turn.response).raw.state } };
+    } catch (e) {
+      const failure = describeFailure(e); // refused | rate-limited | blocked | config | unavailable | unexpected
+      console.error(failure.logMessage);
+      await thread.send(failure.userMessage);
+    }
+  },
+});
+
+// In the platform's event handler; returns right away. Ids drop redeliveries.
+conversations.post(threadKey, { id: event.id, payload: { text } });
+
+// On SIGTERM: finish running turns (up to 10s), start no new ones.
+await conversations.close();
+```
+
+Messages and state must be plain JSON data (a compile error otherwise),
+because where they live is pluggable: `createConversations({ store })` takes
+a `ConversationStore` holding each conversation's waiting messages, its
+state, and which turn is running. The default, `memoryConversationStore()`, is
+one process and forgets idle conversations past 10,000 (state included). A
+shared store (Firestore, say) lets several instances take turns on the same
+conversation, which serverless webhooks need. The store interface is
+experimental until the first persistent store is built against it.
+
+```ts
+interface ConversationStore<M, S> {
+  post(key, msg, opts): Promise<Turn<M, S> | undefined>;           // starts a turn if none is running
+  complete(turn, { handled, state }, opts): Promise<Turn | undefined>; // saves, then the next turn
+  heartbeat(turn): Promise<boolean>;                                // keeps a long turn alive
+}
+
+// Check a store against the contract the loop relies on:
+import { conversationStoreContract } from 'genkit-channels/chat/testing';
+await conversationStoreContract(() => myStore(), { expire: (store, turn) => clock.advance(turn.expiresInMs!) });
+```
+
+Each operation is one transaction per conversation. A turn says how long it
+lasts (`expiresInMs`) and the loop sends heartbeats within that; a turn whose
+process died expires, and the next message in that conversation starts a new
+one with the unhandled messages (`attempt` counts these; past `maxAttempts` a
+message is dropped). State can grow without bound (a client-managed agent's
+whole history), so a store shouldn't keep it in a size-limited record next to
+the messages; the contract saves a 2 MB state. With coalescing, check each
+author before the turn runs as one of them: `filterAllowed(batch, authorOf,
+check)`.
+
 A few more things are available when you need them:
 
 - `channel.secret(name)` reads a secret declared in `channel.yaml` (`secrets:`)

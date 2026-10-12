@@ -20,6 +20,8 @@ secrets: [SLACK_BOT_TOKEN, SLACK_APP_TOKEN]
 #   followThreads: true          keep answering in threads the bot replied in
 #   stream: native | edit        Slack text streaming, or debounced edits
 #   streamEditIntervalMs: 700    debounce for `stream: edit`
+#   coalesce: false              true: messages sent during a turn go into the
+#                                next turn together; false: one turn each
 
 # Socket Mode keeps an outbound WebSocket open, so the instance must stay warm
 # with CPU allocated. No public endpoint, so access stays private.
@@ -37,6 +39,10 @@ validate:
       $not($exists(config.stream)) or config.stream in ['native', 'edit']
     message: >-
       with.stream must be "native" or "edit".
+  - expr: >-
+      $not($exists(config.coalesce)) or $type(config.coalesce) = 'boolean'
+    message: >-
+      with.coalesce must be true or false.
   # Socket Mode events carry no Authorization header, so it would refuse
   # everyone.
   - expr: >-

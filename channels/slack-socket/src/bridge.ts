@@ -16,17 +16,13 @@
 
 /**
  * Pure helpers for the Slack channel: which events start a turn, session keys,
- * mention stripping, length limits, and per-conversation serialization. No
- * Slack SDK or network here, so it's easy to unit test.
+ * mention stripping and thread catch-up. No Slack SDK or network here, so it's
+ * easy to unit test. Ordering, splitting and session ids come from
+ * genkit-channels/chat.
  */
-
-import { createHash } from 'node:crypto';
 
 /** Slack's limit for `markdown_text` in a single call. */
 export const MAX_MARKDOWN_LEN = 12_000;
-
-/** Namespace for deriving session ids (must be UUIDs) from session keys. */
-export const SESSION_NAMESPACE = '6ba7b814-9dad-11d1-80b4-00c04fd430c8';
 
 /** The fields of a Slack `app_mention` / `message` event we look at. */
 export interface IncomingEvent {
@@ -104,26 +100,6 @@ export function missedMessages(
     .join('\n');
 }
 
-/**
- * Deterministic v5 UUID for `name`. The same Slack thread always maps to the
- * same session id, so conversations survive restarts with no bookkeeping.
- */
-export function uuidv5(name: string, namespace = SESSION_NAMESPACE): string {
-  const ns = Buffer.from(namespace.replace(/-/g, ''), 'hex');
-  const bytes = createHash('sha1')
-    .update(ns)
-    .update(Buffer.from(name, 'utf8'))
-    .digest()
-    .subarray(0, 16);
-  bytes[6] = (bytes[6] & 0x0f) | 0x50;
-  bytes[8] = (bytes[8] & 0x3f) | 0x80;
-  const hex = bytes.toString('hex');
-  return (
-    `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-` +
-    `${hex.slice(16, 20)}-${hex.slice(20, 32)}`
-  );
-}
-
 /** One conversation per Slack thread (DM threads included). */
 export function sessionKey(team: string, channel: string, threadTs: string): string {
   return `slack:${team}:${channel}:${threadTs}`;
@@ -138,11 +114,6 @@ export function stripMention(text: string | undefined, botUserId?: string): stri
 
 export function mentions(text: string | undefined, botUserId?: string): boolean {
   return !!botUserId && (text ?? '').includes(`<@${botUserId}`);
-}
-
-/** Truncates to `max`, appending an ellipsis when cut. */
-export function truncate(text: string, max = MAX_MARKDOWN_LEN): string {
-  return text.length > max ? text.slice(0, max - 1) + '\u2026' : text;
 }
 
 /** True for messages from bots (including ourselves) and non-plain subtypes. */
@@ -265,25 +236,5 @@ export class ThreadTracker {
       const oldest = this.known.keys().next().value;
       if (oldest !== undefined) this.known.delete(oldest);
     }
-  }
-}
-
-/**
- * Runs tasks one at a time per key. Two quick messages in one thread would
- * otherwise race on the same session; different threads still run in
- * parallel.
- */
-export class KeyedQueue {
-  private tails = new Map<string, Promise<void>>();
-
-  run(key: string, task: () => Promise<void>): Promise<void> {
-    const prev = this.tails.get(key) ?? Promise.resolve();
-    const next = prev.then(task, task);
-    const tail = next.catch(() => {});
-    this.tails.set(key, tail);
-    void tail.then(() => {
-      if (this.tails.get(key) === tail) this.tails.delete(key);
-    });
-    return next;
   }
 }

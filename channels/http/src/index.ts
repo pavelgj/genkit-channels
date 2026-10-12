@@ -42,6 +42,7 @@ import express, {
   type Response,
 } from 'express';
 import {
+  errorStatus,
   httpStatusFor,
   initChannel,
   type ActionContext,
@@ -228,15 +229,21 @@ function startStream(res: Response): void {
   res.setHeader('Transfer-Encoding', 'chunked');
 }
 
+/**
+ * Callers here are programs, so the app's message and status go out as is
+ * (`{ error: { message, status: 'RESOURCE_EXHAUSTED' } }`). Chat channels use
+ * describeFailure instead, to show people something friendlier.
+ */
 function sendError(res: Response, e: unknown): void {
   const message = e instanceof Error ? e.message : String(e);
-  // The app's error status, mapped: UNAUTHENTICATED 401, PERMISSION_DENIED
-  // 403, INVALID_ARGUMENT 400, ..., anything else 500.
-  const status = httpStatusFor(e);
+  const error = { message, status: errorStatus(e) ?? 'INTERNAL' };
   if (!res.headersSent) {
-    res.status(status).json({ error: { message } });
+    // UNAUTHENTICATED 401, PERMISSION_DENIED 403, RESOURCE_EXHAUSTED 429,
+    // ..., anything else 500.
+    res.status(httpStatusFor(e)).json({ error });
   } else if (!res.writableEnded) {
-    res.end(JSON.stringify({ error: { message } }) + '\n');
+    // Mid-stream: the status line is gone, so the last NDJSON line says it.
+    res.end(JSON.stringify({ error }) + '\n');
   }
 }
 

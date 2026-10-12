@@ -60,7 +60,10 @@ for (const [channel, files] of Object.entries(units)) {
         skipLibCheck: true,
         rootDir: src,
         outDir,
-        paths: { 'genkit-channels': [path.join(root, 'dist', 'index.d.ts')] },
+        paths: {
+          'genkit-channels': [path.join(root, 'dist', 'index.d.ts')],
+          'genkit-channels/chat': [path.join(root, 'dist', 'chat', 'index.d.ts')],
+        },
       },
       files: files.map((f) => path.join(src, f)),
     })
@@ -69,7 +72,7 @@ for (const [channel, files] of Object.entries(units)) {
 }
 // The channels are ESM; the repo root is CommonJS.
 fs.writeFileSync(path.join(out, 'package.json'), '{ "type": "module" }\n');
-// Runtime imports of `genkit-channels` (turn.ts uses isAuthError) resolve to
+// Runtime imports of `genkit-channels` (turn.ts uses genkit-channels/chat) resolve to
 // this checkout, as `linkLocalLibrary` arranges for a real channel install.
 fs.mkdirSync(path.join(out, 'node_modules'), { recursive: true });
 fs.symlinkSync(root, path.join(out, 'node_modules', 'genkit-channels'), 'dir');

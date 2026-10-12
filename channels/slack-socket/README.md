@@ -82,6 +82,7 @@ deployments:
       followThreads: true # default
       stream: native # or `edit` (post, then debounced chat.update)
       streamEditIntervalMs: 700 # for `stream: edit`
+      coalesce: false # true: messages sent during a turn go into the next one
 ```
 
 ## Notes
@@ -97,6 +98,11 @@ deployments:
 - **The conversation itself** is kept across restarts (the session id comes
   from the thread), as long as the agent's store survives.
 - **Messages in one thread run one at a time**, in order. Different threads
-  run in parallel.
+  run in parallel. With `coalesce: true`, messages that arrive while the bot
+  is answering are answered together in the next turn.
+- **Long replies** continue in a new message in the thread once they pass
+  Slack's per-message limit.
+- **Errors** are specific where possible (rate limit, blocked by safety,
+  misconfigured, app not starting); the details go to the channel's log.
 - **Streaming**: if your workspace doesn't support native streaming
   (`chat.startStream` errors), set `stream: edit`.

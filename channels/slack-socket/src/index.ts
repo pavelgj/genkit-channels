@@ -28,12 +28,20 @@
 
 import { App, LogLevel } from '@slack/bolt';
 import { initChannel } from 'genkit-channels';
+import {
+  createConversations,
+  describeFailure,
+  filterAllowed,
+  sessionId,
+  type AllowedBatch,
+  type ConversationMessage,
+  type TurnInput,
+} from 'genkit-channels/chat';
 import { createServer } from 'node:http';
 import {
   type BotIdentity,
   type FetchThread,
   type IncomingEvent,
-  KeyedQueue,
   type ThreadMessage,
   ThreadTracker,
   type Trigger,
@@ -41,10 +49,9 @@ import {
   messageTrigger,
   missedMessages,
   sessionKey,
-  uuidv5,
 } from './bridge.js';
 import { editReply, nativeStreamReply, type ReplyTarget } from './slack-reply.js';
-import { type ClientStateStore, runTurn } from './turn.js';
+import { type AgentState, runTurn } from './turn.js';
 
 /** Slack-specific options (the deployment's `with` block). */
 interface SlackOptions {
@@ -54,6 +61,25 @@ interface SlackOptions {
   stream?: 'native' | 'edit';
   /** Debounce for `stream: edit`. Default 700ms. */
   streamEditIntervalMs?: number;
+  /**
+   * Messages that arrive in a thread while a turn is running go into the next
+   * turn together (true), or each get their own turn, in order (false,
+   * default).
+   */
+  coalesce?: boolean;
+}
+
+/** One triggering Slack event, as queued in a thread's conversation. */
+interface ThreadEvent {
+  ev: IncomingEvent;
+  trigger: Trigger;
+  team: string;
+}
+
+/** What a thread's conversation keeps between turns. */
+interface ThreadState {
+  /** Client-managed agents: the agent's state after the last turn. */
+  agent?: AgentState;
 }
 
 const log = (msg: string) => console.log(`[channel:slack] ${msg}`);
@@ -82,6 +108,7 @@ async function main(): Promise<void> {
   const followThreads = options.followThreads ?? true;
   const streamMode = options.stream ?? 'native';
   const editIntervalMs = options.streamEditIntervalMs ?? 700;
+  const coalesce = options.coalesce ?? false;
 
   const app = new App({
     token: channel.secret('SLACK_BOT_TOKEN'),
@@ -101,8 +128,6 @@ async function main(): Promise<void> {
     });
   }
 
-  const clientState: ClientStateStore = new Map();
-  const queue = new KeyedQueue();
   let team = '';
   const bot: BotIdentity = {};
 
@@ -139,68 +164,137 @@ async function main(): Promise<void> {
   // checked against Slack once, so following survives restarts.
   const threads = new ThreadTracker({ fetchThread, bot: () => bot });
 
-  const say = (target: ReplyTarget, text: string) =>
-    app.client.chat
-      .postMessage({ channel: target.channel, thread_ts: target.threadTs, text })
-      .catch((e: Error) => log(`could not post to thread ${target.threadTs}: ${e.message}`));
+  /**
+   * The turn input for a batch from one thread. A bare mention (catch-up)
+   * reads the thread, which already holds every message in the batch;
+   * otherwise it's the messages' text, one per line, like catch-up input.
+   */
+  async function batchInput(
+    batch: ConversationMessage<ThreadEvent>[],
+    notify: (text: string) => Promise<unknown>
+  ): Promise<string | undefined> {
+    const last = batch[batch.length - 1].payload;
+    const bare = [...batch].reverse().find((m) => m.payload.trigger.catchUp)?.payload;
+    if (!bare) return batch.map((m) => m.payload.trigger.text).join('\n');
+    const thread = await fetchThread(last.ev.channel, last.trigger.threadTs);
+    if (!thread) {
+      await notify("I couldn't read this thread. Mention me again with your message.");
+      return undefined;
+    }
+    const input = missedMessages(thread, bot, bare.ev.ts);
+    if (!input) {
+      await notify("I'm here. Nothing new since my last reply, so go ahead and ask.");
+      return undefined;
+    }
+    log(`catching up in thread ${last.trigger.threadTs}`);
+    return input;
+  }
 
-  function handle(ev: IncomingEvent, trigger: Trigger, eventTeam?: string) {
-    const teamId = eventTeam || team;
-    const key = sessionKey(teamId, ev.channel, trigger.threadTs);
-    threads.follow(ev.channel, trigger.threadTs);
+  /** The context provider's view of one Slack event's author. */
+  const contextFor = (e: ThreadEvent, input: string) =>
+    channel.context({
+      input,
+      channel: {
+        platform: 'slack',
+        ...(e.ev.user ? { user: { id: e.ev.user } } : {}),
+        ...(e.team ? { tenant: e.team } : {}),
+      },
+    });
+
+  /** Runs one turn for a batch of events from the same thread. */
+  async function runBatch({
+    key,
+    messages: queued,
+    state,
+    signal,
+  }: TurnInput<ThreadEvent, ThreadState>): Promise<{ state: ThreadState } | void> {
+    const first = queued[0].payload;
+    const say = (text: string) =>
+      app.client.chat
+        .postMessage({ channel: first.ev.channel, thread_ts: first.trigger.threadTs, text })
+        .catch((e: Error) => log(`could not post to thread ${first.trigger.threadTs}: ${e.message}`));
+    // A coalesced batch runs as one caller, so each author is checked, and
+    // refused authors' messages never reach the agent.
+    let checked: AllowedBatch<ConversationMessage<ThreadEvent>>;
+    try {
+      checked = await filterAllowed(
+        queued,
+        (m) => m.payload.ev.user ?? '',
+        (m) => contextFor(m.payload, m.payload.trigger.text)
+      );
+    } catch (e) {
+      const failure = describeFailure(e);
+      log(`no context: ${failure.logMessage}`);
+      await say(failure.userMessage);
+      return;
+    }
+    for (const { author, error } of checked.refused) {
+      log(`refused ${author || '(unknown user)'}: ${describeFailure(error).logMessage}`);
+    }
+    const batch = checked.messages;
+    if (batch.length === 0 || checked.context === undefined) {
+      await say(describeFailure(checked.refused[0]?.error).userMessage);
+      return;
+    }
+    const context = checked.context;
+    // The reply goes to whoever posted last.
+    const { ev, trigger, team: teamId } = batch[batch.length - 1].payload;
     const target: ReplyTarget = {
       channel: ev.channel,
       threadTs: trigger.threadTs,
       user: ev.user,
       team: teamId,
     };
-    const sessionId = uuidv5(key);
-    // One turn at a time per thread; queued messages run in order. Catch-up
-    // reads the thread inside the queue, so it sees replies to earlier turns.
-    return queue.run(key, async () => {
-      let input = trigger.text;
-      if (trigger.catchUp) {
-        const thread = await fetchThread(ev.channel, trigger.threadTs);
-        if (!thread) {
-          await say(target, "I couldn't read this thread. Mention me again with your message.");
-          return;
-        }
-        input = missedMessages(thread, bot, ev.ts);
-        if (!input) {
-          await say(target, "I'm here. Nothing new since my last reply, so go ahead and ask.");
-          return;
-        }
-        log(`catching up in thread ${trigger.threadTs}`);
-      }
-      const started = Date.now();
-      log(`turn start: thread ${trigger.threadTs}`);
-      const res = await runTurn({
-        agent: (handle) => channel.agent(agentName, handle),
-        // `{}` unless the deployment sets `expose.contextProvider`.
-        context: () =>
-          channel.context({
-            input,
-            channel: {
-              platform: 'slack',
-              ...(ev.user ? { user: { id: ev.user } } : {}),
-              ...(teamId ? { tenant: teamId } : {}),
-            },
-          }),
-        agentState,
-        sessionKey: key,
-        sessionId,
-        input,
-        reply:
-          streamMode === 'edit'
-            ? editReply(app.client, target, editIntervalMs)
-            : nativeStreamReply(app.client, target),
-        clientState,
-        log,
-      });
-      log(
-        `turn ${res ? 'done' : 'failed'}: thread ${trigger.threadTs} ` +
-          `(${Date.now() - started}ms)`
-      );
+    const input = await batchInput(batch, say);
+    if (!input) return;
+    const started = Date.now();
+    log(
+      `turn start: thread ${trigger.threadTs}` +
+        (batch.length > 1 ? ` (${batch.length} messages)` : '')
+    );
+    const res = await runTurn({
+      agent: (handle) => channel.agent(agentName, handle),
+      // Checked above (`{}` without `expose.contextProvider`).
+      context: async () => context,
+      agentState,
+      sessionId: sessionId(key),
+      input,
+      reply:
+        streamMode === 'edit'
+          ? editReply(app.client, target, editIntervalMs)
+          : nativeStreamReply(app.client, target),
+      state: state?.agent,
+      signal,
+      log,
+    });
+    log(
+      `turn ${res ? 'done' : 'failed'}: thread ${trigger.threadTs} ` +
+        `(${Date.now() - started}ms)`
+    );
+    // Saved with the messages marked handled. Server-managed agents keep
+    // their history in their own store, so there's nothing to save.
+    if (agentState === 'client' && res?.raw.state !== undefined) {
+      return { state: { agent: res.raw.state } };
+    }
+  }
+
+  // One turn at a time per thread, in order; different threads run in
+  // parallel. Catch-up reads the thread inside the turn, so it sees replies
+  // to earlier turns.
+  const conversations = createConversations<ThreadEvent, ThreadState>({
+    coalesce,
+    handler: runBatch,
+    onError: (key, e) => log(`turn for ${key} failed: ${e instanceof Error ? e.message : String(e)}`),
+  });
+
+  function handle(ev: IncomingEvent, trigger: Trigger, eventTeam?: string): Promise<void> {
+    const teamId = eventTeam || team;
+    threads.follow(ev.channel, trigger.threadTs);
+    // Slack retries events it thinks weren't acked; the channel and ts
+    // identify a message, so a retry is dropped.
+    return conversations.post(sessionKey(teamId, ev.channel, trigger.threadTs), {
+      id: `${ev.channel}:${ev.ts}`,
+      payload: { ev, trigger, team: teamId },
     });
   }
 
@@ -306,6 +400,9 @@ async function main(): Promise<void> {
     log(`${signal} received, shutting down`);
     health.close();
     await app.stop().catch(() => {});
+    // Let turns in progress finish (or cut them after 10s) before the app's
+    // box goes away.
+    await conversations.close();
     await channel.close();
     process.exit(0);
   };

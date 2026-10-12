@@ -20,12 +20,12 @@
  */
 
 import {
-  isAuthError,
   type ActionContext,
   type AgentAPI,
   type AgentHandleOptions,
   type AgentResponse,
 } from 'genkit-channels';
+import { describeFailure } from 'genkit-channels/chat';
 
 /** Where a turn's output goes (a Slack thread, in production). */
 export interface Reply {
@@ -39,11 +39,8 @@ export interface Reply {
   fail(message: string): Promise<void>;
 }
 
-/** Client-managed agents: conversation state the channel carries per thread. */
-export type ClientStateStore = Map<string, AgentResponse['raw']['state']>;
-
-export const FAILURE_MESSAGE = 'Sorry, something went wrong. Please try again.';
-export const REFUSED_MESSAGE = "Sorry, you aren't allowed to use this bot.";
+/** Client-managed agents: the conversation state the channel carries. */
+export type AgentState = AgentResponse['raw']['state'];
 
 export async function runTurn(opts: {
   /** The agent handle for this conversation, given the caller's context. */
@@ -54,20 +51,25 @@ export async function runTurn(opts: {
    */
   context: () => Promise<ActionContext>;
   agentState: 'server' | 'client';
-  sessionKey: string;
   sessionId: string;
   input: string;
   reply: Reply;
-  clientState: ClientStateStore;
+  /** Client-managed agents: what the previous turn returned as `state`. */
+  state?: AgentState;
+  /** Stops the turn (another drainer took this thread over). */
+  signal?: AbortSignal;
   log?: (msg: string) => void;
 }): Promise<AgentResponse | undefined> {
-  const { agentState, sessionKey, sessionId, input, reply, clientState } = opts;
+  const { agentState, sessionId, input, reply } = opts;
   let context: ActionContext;
   try {
     context = await opts.context();
   } catch (e) {
-    opts.log?.(`caller refused: ${(e as Error).message}`);
-    await reply.fail(isAuthError(e) ? REFUSED_MESSAGE : FAILURE_MESSAGE).catch(() => {});
+    // Usually the provider refusing the caller; anything else (the app is
+    // down, say) is classified the same way as a failed turn.
+    const failure = describeFailure(e);
+    opts.log?.(`no context: ${failure.logMessage}`);
+    await reply.fail(failure.userMessage).catch(() => {});
     return undefined;
   }
   // One handle per conversation, so `box.route: session` gives each thread
@@ -75,13 +77,13 @@ export async function runTurn(opts: {
   const agent = opts.agent({ sessionId, context });
   const chat =
     agentState === 'client'
-      ? agent.chat({ state: clientState.get(sessionKey) })
+      ? agent.chat({ state: opts.state })
       : agent.chat({ sessionId });
 
   await reply.thinking().catch(() => {});
   let streamed = '';
   try {
-    const turn = chat.sendStream(input);
+    const turn = chat.sendStream(input, { abortSignal: opts.signal });
     for await (const chunk of turn.stream) {
       if (chunk.text) {
         streamed += chunk.text;
@@ -90,13 +92,18 @@ export async function runTurn(opts: {
     }
     const res = await turn.response;
     await reply.finish(res.text || streamed);
-    if (agentState === 'client' && res.raw.state !== undefined) {
-      clientState.set(sessionKey, res.raw.state);
-    }
+    // Client-managed agents: the caller saves `res.raw.state` for next time.
     return res;
   } catch (e) {
-    opts.log?.(`turn failed: ${(e as Error).message}`);
-    await reply.fail(FAILURE_MESSAGE).catch(() => {});
+    // Cut short on purpose: whoever drains next answers, so say nothing.
+    if (opts.signal?.aborted) {
+      opts.log?.('turn stopped: the thread moved to another drainer');
+      return undefined;
+    }
+    // What streamed stays; the reply adds the failure note after it.
+    const failure = describeFailure(e);
+    opts.log?.(`turn failed: ${failure.logMessage}`);
+    await reply.fail(failure.userMessage).catch(() => {});
     return undefined;
   }
 }

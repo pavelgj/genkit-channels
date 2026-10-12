@@ -40,21 +40,31 @@ import {
   type Message,
   Partials,
   type SendableChannels,
+  type TextBasedChannel,
 } from 'discord.js';
 import {
   initChannel,
-  isAuthError,
   type ActionContext,
   type AgentChat,
   type AgentResponse,
 } from 'genkit-channels';
+import {
+  createConversations,
+  describeFailure,
+  filterAllowed,
+  messageRenderer,
+  sessionId,
+  type AllowedBatch,
+  type TurnInput,
+} from 'genkit-channels/chat';
 import { createServer } from 'node:http';
 import {
+  MAX_DISCORD_LEN,
   deriveSessionKey,
   formatGatheredMessages,
   stripMention,
-  truncate,
-  uuidv5,
+  turnMessages,
+  type IdentifiedMessage,
 } from './bridge.js';
 
 /** How long a single stream edit waits before the next (rate-limit friendly). */
@@ -62,11 +72,41 @@ const DEFAULT_STREAM_EDIT_MS = 700;
 /** Max messages to scan when gathering the batch since the last bot reply. */
 const GATHER_FETCH_LIMIT = 50;
 
+/**
+ * A triggering message as queued: plain data, so a persistent store can hold
+ * it. The handler fetches the live channel again from `channelId`.
+ */
+interface QueuedMessage {
+  id: string;
+  channelId: string;
+  guildId?: string;
+  author: { id: string; username: string };
+  /** The text with the bot's mention removed. */
+  text: string;
+}
+
+/** What a conversation keeps between turns. */
+interface ConversationState {
+  /** Client-managed agents: the agent's state after the last turn. */
+  agent?: AgentResponse['raw']['state'];
+  /**
+   * The newest message id a turn has used, so the next turn's history
+   * gather doesn't repeat it.
+   */
+  answeredUpTo?: string;
+}
+
 /** Discord-specific options (the deployment's `with` block). */
 interface DiscordOptions {
   streamEditIntervalMs?: number;
   session?: 'thread' | 'channel';
   includeSenderName?: boolean;
+  /**
+   * Messages that arrive in a conversation while a turn is running go into
+   * the next turn together (true, default), or each get their own turn
+   * (false).
+   */
+  coalesce?: boolean;
 }
 
 async function main(): Promise<void> {
@@ -93,11 +133,6 @@ async function main(): Promise<void> {
   let ready = false;
   let botId: string | undefined;
 
-  // Client-managed agents (no server store): keep the latest state per session
-  // key so the next turn can round-trip it. Server-managed agents ignore this
-  // (their store remembers the conversation by sessionId).
-  const clientState = new Map<string, AgentResponse['raw']['state']>();
-
   // Health / readiness endpoint on $PORT. 200 once ready, 503 while starting up.
   const port = Number(process.env.PORT) || 8080;
   const health = createServer((req, res) => {
@@ -122,6 +157,7 @@ async function main(): Promise<void> {
   const sessionScope = options.session ?? 'thread';
   const includeSenderName =
     options.includeSenderName ?? sessionScope === 'channel';
+  const coalesce = options.coalesce ?? true;
 
   const client = new Client({
     intents: [
@@ -133,179 +169,240 @@ async function main(): Promise<void> {
     partials: [Partials.Channel],
   });
 
-  client.on('messageCreate', async (msg) => {
-    try {
-      if (msg.author.bot) return;
-      const isDM = msg.channel.type === ChannelType.DM;
-      const mentionsBot = !!botId && msg.mentions.users.has(botId);
-      // Only respond in DMs or when mentioned in a channel.
-      if (!isDM && !mentionsBot) return;
-
-      await handleTrigger(msg, isDM);
-    } catch (e) {
-      console.error('[channel:discord] error handling message:', e);
-      try {
-        await msg.reply(
-          'Sorry, something went wrong handling that. Please try again.'
-        );
-      } catch {
-        // best-effort
-      }
-    }
+  // One turn at a time per conversation, with the state the previous turn
+  // saved; different conversations run in parallel. Queued messages are the
+  // triggers (DMs and mentions).
+  const conversations = createConversations<QueuedMessage, ConversationState>({
+    coalesce,
+    handler: runBatch,
+    onError: (key, e) =>
+      console.error(`[channel:discord] turn for ${key} failed:`, e),
   });
 
-  /**
-   * Handles a triggering message: gathers the messages posted since the bot's
-   * last reply (so a burst of messages between mentions becomes one turn),
-   * runs an agent turn, and streams the reply back.
-   */
-  async function handleTrigger(msg: Message, isDM: boolean): Promise<void> {
+  client.on('messageCreate', (msg) => {
+    if (msg.author.bot) return;
+    const isDM = msg.channel.type === ChannelType.DM;
+    const mentionsBot = !!botId && msg.mentions.users.has(botId);
+    // Only respond in DMs or when mentioned in a channel.
+    if (!isDM && !mentionsBot) return;
+    void conversations.post(conversationKey(msg, isDM), {
+      id: msg.id,
+      payload: {
+        id: msg.id,
+        channelId: msg.channelId,
+        ...(msg.guildId ? { guildId: msg.guildId } : {}),
+        author: { id: msg.author.id, username: msg.author.username },
+        text: stripMention(msg.content, botId),
+      },
+    });
+  });
+
+  /** The conversation a message belongs to (see `deriveSessionKey`). */
+  function conversationKey(msg: Message, isDM: boolean): string {
     const isThread =
       msg.channel.type === ChannelType.PublicThread ||
       msg.channel.type === ChannelType.PrivateThread;
     const channelId = isThread
       ? (msg.channel as AnyThreadChannel).parentId ?? msg.channelId
       : msg.channelId;
-    const threadId = isThread ? msg.channelId : undefined;
-
-    const sessionKey = deriveSessionKey({
+    return deriveSessionKey({
       isDM,
       userId: msg.author.id,
       channelId,
-      threadId,
+      threadId: isThread ? msg.channelId : undefined,
       id: msg.id,
     });
-    const sessionId = uuidv5(sessionKey);
-
-    const gathered = await gatherSince(msg);
-    const input = formatGatheredMessages(gathered, { includeSenderName });
-    if (!input) return;
-
-    // `{}` unless the deployment sets `expose.contextProvider`. A refused
-    // caller gets one short reply and the agent never runs.
-    let context: ActionContext;
-    try {
-      context = await app.context({
-        input,
-        channel: {
-          platform: 'discord',
-          user: { id: msg.author.id, displayName: msg.author.username },
-          ...(msg.guildId ? { tenant: msg.guildId } : {}),
-        },
-      });
-    } catch (e) {
-      if (!isAuthError(e)) throw e;
-      console.log(`[channel:discord] refused ${msg.author.id}: ${(e as Error).message}`);
-      await msg.reply("Sorry, you aren't allowed to use this bot.").catch(() => {});
-      return;
-    }
-
-    await runTurn({ sessionKey, sessionId, channel: msg.channel, input, context });
   }
 
   /**
-   * Gathers non-bot messages in the triggering message's channel since the
-   * bot's last message, oldest first, always including the trigger. This turns
-   * "several messages posted between mentions" into a single agent input.
+   * Runs one turn for the triggers queued in a conversation: checks each
+   * author, gathers what was posted since the bot's last reply (so a burst
+   * of messages between mentions becomes one turn), and streams the reply.
+   */
+  async function runBatch({
+    key,
+    messages: queued,
+    state,
+    signal,
+  }: TurnInput<QueuedMessage, ConversationState>): Promise<{
+    state: ConversationState;
+  } | void> {
+    const first = queued[0].payload;
+    const channel = await client.channels.fetch(first.channelId);
+    if (!channel?.isTextBased() || !channel.isSendable()) {
+      console.error(`[channel:discord] can't reply in channel ${first.channelId}`);
+      return;
+    }
+    const replyTo = (id: string, content: string) =>
+      channel.send({ content, reply: { messageReference: id } }).catch(() => {});
+
+    // `{}` unless the deployment sets `expose.contextProvider`. A coalesced
+    // batch runs as one caller, so each author is checked; a refused author
+    // gets one short reply and their messages never reach the agent.
+    let checked: AllowedBatch<QueuedMessage>;
+    try {
+      checked = await filterAllowed(
+        queued.map((m) => m.payload),
+        (m) => m.author.id,
+        (m) =>
+          app.context({
+            input: m.text,
+            channel: {
+              platform: 'discord',
+              user: { id: m.author.id, displayName: m.author.username },
+              ...(m.guildId ? { tenant: m.guildId } : {}),
+            },
+          })
+      );
+    } catch (e) {
+      const failure = describeFailure(e);
+      console.error(`[channel:discord] no context: ${failure.logMessage}`);
+      await replyTo(first.id, failure.userMessage);
+      return;
+    }
+    for (const { author, error } of checked.refused) {
+      const failure = describeFailure(error);
+      console.log(`[channel:discord] refused ${author}: ${failure.logMessage}`);
+      const theirs = queued.filter((m) => m.payload.author.id === author);
+      const lastOfTheirs = theirs[theirs.length - 1];
+      if (lastOfTheirs) await replyTo(lastOfTheirs.id, failure.userMessage);
+    }
+    const allowed = checked.messages;
+    const last = allowed[allowed.length - 1];
+    if (!last || checked.context === undefined) return;
+    const refusedIds = new Set(
+      queued
+        .filter((m) => checked.refused.some((r) => r.author === m.payload.author.id))
+        .map((m) => m.id)
+    );
+
+    const triggers = allowed.map((m) => ({
+      id: m.id,
+      userName: m.author.username,
+      text: m.text,
+    }));
+    // History is context the triggering user chose to bring in by mentioning
+    // the bot; it still never includes a refused author's queued triggers.
+    const history = (await gatherSince(channel, last.id)).filter(
+      (m) => !refusedIds.has(m.id)
+    );
+    const messages = turnMessages(triggers, history, state?.answeredUpTo);
+    const input = formatGatheredMessages(messages, { includeSenderName });
+    if (!input) return;
+    const answeredUpTo = messages[messages.length - 1]?.id ?? last.id;
+
+    const res = await runTurn({
+      sessionKey: key,
+      channel,
+      input,
+      context: checked.context,
+      agentState: state?.agent,
+      signal,
+    });
+    // Saved with the messages marked handled. Server-managed agents keep
+    // their history in their own store; client-managed ones carry it here.
+    return {
+      state: {
+        answeredUpTo,
+        agent: agentState === 'client' ? (res?.raw.state ?? state?.agent) : undefined,
+      },
+    };
+  }
+
+  function asGathered(m: Message): IdentifiedMessage {
+    return {
+      userName: m.author.username,
+      text: stripMention(m.content, botId),
+      id: m.id,
+    };
+  }
+
+  /**
+   * Non-bot messages in the channel posted before `beforeId` and after the
+   * bot's last message, oldest first. This turns "several messages posted
+   * between mentions" into a single agent input.
    */
   async function gatherSince(
-    trigger: Message
-  ): Promise<Array<{ userName: string; text: string; id: string }>> {
-    const collected = [
-      {
-        userName: trigger.author.username,
-        text: stripMention(trigger.content, botId),
-        id: trigger.id,
-      },
-    ];
+    channel: TextBasedChannel,
+    beforeId: string
+  ): Promise<IdentifiedMessage[]> {
     try {
-      const recent = await trigger.channel.messages.fetch({
+      const recent = await channel.messages.fetch({
         limit: GATHER_FETCH_LIMIT,
-        before: trigger.id,
+        before: beforeId,
       });
-      // `fetch` returns newest-first; walk newest -> oldest and stop at the
-      // bot's last message (exclusive) or the first bot boundary.
-      const older: Array<{ userName: string; text: string; id: string }> = [];
+      // `fetch` returns newest-first; stop at the bot's last message.
+      const older: IdentifiedMessage[] = [];
       for (const m of recent.values()) {
         if (m.author.bot) break;
-        older.push({
-          userName: m.author.username,
-          text: stripMention(m.content, botId),
-          id: m.id,
-        });
+        older.push(asGathered(m));
       }
-      // `older` is newest-first; prepend reversed so the batch is oldest-first.
-      older.reverse();
-      return [...older, ...collected];
+      return older.reverse();
     } catch {
-      // If history isn't available (permissions, DM quirks), just use the trigger.
-      return collected;
+      // History isn't available (permissions, DM quirks): the triggers alone.
+      return [];
     }
   }
 
   /** Opens a chat honoring server- vs client-managed state, runs, and streams. */
   async function runTurn({
     sessionKey,
-    sessionId,
     channel,
     input,
     context,
+    agentState: previous,
+    signal,
   }: {
     sessionKey: string;
-    sessionId: string;
-    channel: Message['channel'];
+    channel: SendableChannels;
     input: string;
     context: ActionContext;
-  }): Promise<void> {
+    /** Client-managed agents: the state the previous turn returned. */
+    agentState?: AgentResponse['raw']['state'];
+    signal: AbortSignal;
+  }): Promise<AgentResponse | undefined> {
+    const id = sessionId(sessionKey);
     // One handle per conversation: with `box.route: session` every call of
     // this conversation goes to its own box. Handles are cheap.
-    const agent = app.agent(agentName, { sessionId, context });
+    const agent = app.agent(agentName, { sessionId: id, context });
     const chat: AgentChat =
       agentState === 'client'
-        ? agent.chat({ state: clientState.get(sessionKey) })
-        : agent.chat({ sessionId });
-
-    const res = await streamReply(chat, input, channel);
-
-    // Persist client-managed state for the next turn.
-    const state = res?.raw.state;
-    if (agentState === 'client' && state !== undefined) {
-      clientState.set(sessionKey, state);
-    }
+        ? agent.chat({ state: previous })
+        : agent.chat({ sessionId: id });
+    return streamReply(chat, input, channel, signal);
   }
 
   /**
-   * Streams an agent turn to Discord as progressive edits of a single message,
-   * debounced and truncated to Discord's limit. Falls back to a final post.
+   * Streams an agent turn to Discord as debounced edits. A reply longer than
+   * Discord's limit continues in further messages instead of being cut off.
    */
   async function streamReply(
     chat: AgentChat,
     input: string,
-    channel: Message['channel']
+    sendable: SendableChannels,
+    signal: AbortSignal
   ): Promise<AgentResponse | undefined> {
-    const turn = chat.sendStream(input);
-    let sent: Message | undefined;
+    const out = messageRenderer<Message>(
+      {
+        post: (text) => sendable.send(text),
+        edit: async (message, text) => {
+          await message.edit(text);
+        },
+      },
+      MAX_DISCORD_LEN
+    );
     let accumulated = '';
     let lastEdit = 0;
-    let lastRendered = '';
-
-    if (!channel.isSendable()) return undefined;
-    const sendable: SendableChannels = channel;
 
     const flush = async (force = false): Promise<void> => {
       const now = Date.now();
       if (!force && now - lastEdit < streamEditIntervalMs) return;
-      const text = truncate(accumulated.trim());
-      if (!text || text === lastRendered) return;
+      if (!accumulated.trim()) return;
       lastEdit = now;
-      lastRendered = text;
-      if (!sent) {
-        sent = await sendable.send(text);
-      } else {
-        await sent.edit(text);
-      }
+      await out.render(accumulated);
     };
 
+    const turn = chat.sendStream(input, { abortSignal: signal });
     try {
       // Typing indicator until the first content lands.
       sendable.sendTyping().catch(() => {});
@@ -316,20 +413,21 @@ async function main(): Promise<void> {
         }
       }
       const res = await turn.response;
-      const finalText = truncate((res.text || accumulated).trim());
-      if (finalText) {
-        if (!sent) {
-          await sendable.send(finalText);
-        } else if (finalText !== lastRendered) {
-          await sent.edit(finalText);
-        }
-      }
+      accumulated = res.text || accumulated;
+      await flush(true);
       return res;
     } catch (e) {
-      console.error('[channel:discord] turn failed:', (e as Error).message);
-      const note = 'Sorry, something went wrong. Please try again.';
-      if (!sent) await sendable.send(note).catch(() => {});
+      // Cut short on purpose: whoever drains next answers, so say nothing.
+      if (signal.aborted) return undefined;
+      // What streamed stays; the failure note goes after it.
+      const failure = describeFailure(e);
+      console.error(`[channel:discord] turn failed: ${failure.logMessage}`);
+      await flush(true).catch(() => {});
+      await sendable.send(failure.userMessage).catch(() => {});
       return undefined;
+    } finally {
+      // Settles the response promise when the stream threw first.
+      await turn.response.catch(() => {});
     }
   }
 
@@ -360,6 +458,9 @@ async function main(): Promise<void> {
   const shutdown = async (signal: NodeJS.Signals): Promise<void> => {
     console.log(`[channel:discord] ${signal} received, shutting down`);
     health.close();
+    // Let turns in progress finish (or cut them after 10s) while the
+    // gateway connection can still post their replies.
+    await conversations.close();
     try {
       await client.destroy();
     } catch {

@@ -15,8 +15,7 @@
  */
 
 /**
- * The Slack channel without Slack: trigger rules, session keys, per-thread
- * serialization, and full turns against the real echo app (server- and
+ * The Slack channel without Slack: trigger rules, session keys, and full turns against the real echo app (server- and
  * client-managed) streamed into a recording Reply. The channel's bridge and
  * turn modules are compiled to `test/.build/` first by
  * test/build-channel-units.mjs.
@@ -27,32 +26,29 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  KeyedQueue,
-  MAX_MARKDOWN_LEN,
   mentionTrigger,
   messageTrigger,
   missedMessages,
   ThreadTracker,
   sessionKey,
   stripMention,
-  truncate,
-  uuidv5,
 } from './.build/slack-socket/bridge.js';
-import { FAILURE_MESSAGE, REFUSED_MESSAGE, runTurn } from './.build/slack-socket/turn.js';
+import { runTurn } from './.build/slack-socket/turn.js';
+import { DEFAULT_FAILURE_MESSAGES, sessionId } from '../dist/chat/index.js';
 import { initChannel } from '../dist/index.js';
 import { check, run } from './helpers.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const echoApp = path.join(here, 'fixtures', 'echo-app.mjs');
+const failingApp = path.join(here, 'fixtures', 'failing-app.mjs');
 const BOT = 'UBOT';
 
 async function bridge() {
   check('stripMention removes <@BOT>', stripMention(`<@${BOT}> hi`, BOT) === 'hi');
   check('stripMention removes labelled mentions', stripMention(`hey <@${BOT}|genkit>`, BOT) === 'hey');
   check('stripMention keeps other users', stripMention(`<@UOTHER> hi`, BOT) === '<@UOTHER> hi');
-  check('truncate respects the limit', truncate('x'.repeat(MAX_MARKDOWN_LEN + 5)).length === MAX_MARKDOWN_LEN);
-  check('uuidv5 is stable', uuidv5(sessionKey('T', 'C', '1.2')) === uuidv5(sessionKey('T', 'C', '1.2')));
-  check('threads get distinct sessions', uuidv5(sessionKey('T', 'C', '1.2')) !== uuidv5(sessionKey('T', 'C', '1.3')));
+  check('session ids are stable per thread', sessionId(sessionKey('T', 'C', '1.2')) === sessionId(sessionKey('T', 'C', '1.2')));
+  check('threads get distinct sessions', sessionId(sessionKey('T', 'C', '1.2')) !== sessionId(sessionKey('T', 'C', '1.3')));
 
   const base = { channel: 'C1', user: 'U1', ts: '100.1' };
   const t1 = mentionTrigger({ ...base, text: `<@${BOT}> weather?` }, BOT);
@@ -191,32 +187,6 @@ function catchUp() {
   );
 }
 
-async function queue() {
-  const q = new KeyedQueue();
-  const order = [];
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-  await Promise.all([
-    q.run('a', async () => {
-      await sleep(30);
-      order.push('a1');
-    }),
-    q.run('a', async () => order.push('a2')),
-    q.run('b', async () => order.push('b1')),
-  ]);
-  check('same thread runs in order', order.indexOf('a1') < order.indexOf('a2'));
-  check('other threads run in parallel', order[0] === 'b1');
-  const failed = q
-    .run('c', async () => {
-      throw new Error('boom');
-    })
-    .then(() => false, () => true);
-  let ranAfter = false;
-  await q.run('c', async () => {
-    ranAfter = true;
-  });
-  check('a failed turn does not block the thread', (await failed) && ranAfter);
-}
-
 /** A Reply that records calls, optionally failing on append. */
 function recorder({ failAppend = false } = {}) {
   const calls = [];
@@ -242,21 +212,17 @@ async function turns() {
       box: { runner: { type: 'exec', cmd: ['node', echoApp] } },
     },
   });
-  const clientState = new Map();
-  const turn = (agentState, key, input, reply) => {
-    const sessionId = uuidv5(key);
-    return runTurn({
+  const turn = (agentState, key, input, reply, state) =>
+    runTurn({
       agent: (handle) =>
         channel.agent(agentState === 'server' ? 'echoAgent' : 'echoClientAgent', handle),
       context: () => channel.context({ input, channel: { platform: 'slack', user: { id: 'U1' } } }),
       agentState,
-      sessionKey: key,
-      sessionId,
+      sessionId: sessionId(key),
       input,
       reply,
-      clientState,
+      state,
     });
-  };
   try {
     const key = sessionKey('T', 'C', '1.0');
     const r1 = recorder();
@@ -267,30 +233,31 @@ async function turns() {
       '[server] finish gets the full reply',
       r1.calls.at(-1)[0] === 'finish' && r1.calls.at(-1)[1] === 'echo:hi'
     );
-    check('[server] the session id comes from the thread', res1?.sessionId === uuidv5(key));
+    check('[server] the session id comes from the thread', res1?.sessionId === sessionId(key));
 
     const res2 = await turn('server', key, 'again', recorder().reply);
     const snap = await channel
-      .agent('echoAgent', { sessionId: uuidv5(key) })
-      .getSnapshot({ sessionId: uuidv5(key) });
+      .agent('echoAgent', { sessionId: sessionId(key) })
+      .getSnapshot({ sessionId: sessionId(key) });
     check(
       '[server] the next message resumes the session',
-      res2?.sessionId === uuidv5(key) && snap?.state?.messages?.length === 4
+      res2?.sessionId === sessionId(key) && snap?.state?.messages?.length === 4
     );
-    check('[server] no client state is kept', clientState.size === 0);
+    check('[server] no client state comes back', res2?.raw.state === undefined);
 
-    // Client-managed: the channel carries state between turns.
+    // Client-managed: the caller carries state between turns (the
+    // conversation store does, in the channel).
     const ckey = sessionKey('T', 'C', '2.0');
-    await turn('client', ckey, 'one', recorder().reply);
-    check('[client] state is stored per thread', clientState.has(ckey));
-    const res4 = await turn('client', ckey, 'two', recorder().reply);
+    const res3 = await turn('client', ckey, 'one', recorder().reply);
+    check('[client] the turn returns its state', res3?.raw.state !== undefined);
+    const res4 = await turn('client', ckey, 'two', recorder().reply, res3?.raw.state);
     check('[client] the next turn sees the history', res4?.raw.state?.messages?.length >= 4);
 
     const r5 = recorder({ failAppend: true });
     const res5 = await turn('server', key, 'x', r5.reply);
     check(
       'a failed reply reports to the user',
-      !res5 && r5.calls.some((c) => c[0] === 'fail' && c[1] === FAILURE_MESSAGE)
+      !res5 && r5.calls.some((c) => c[0] === 'fail' && c[1] === DEFAULT_FAILURE_MESSAGES.unexpected)
     );
   } finally {
     await channel.close();
@@ -313,11 +280,9 @@ async function guardedTurns() {
       context: () =>
         channel.context({ headers, input: 'hi', channel: { platform: 'slack', user: { id: 'U7' } } }),
       agentState: 'server',
-      sessionKey: 'k',
-      sessionId: uuidv5('guarded'),
+      sessionId: sessionId('guarded'),
       input: 'hi',
       reply,
-      clientState: new Map(),
     });
   try {
     const ok = recorder();
@@ -328,7 +293,43 @@ async function guardedTurns() {
     const none = await turn({ authorization: 'Bearer nope' }, refused.reply);
     check(
       '[guarded] a refused caller gets the refusal, and nothing else',
-      !none && refused.calls.length === 1 && refused.calls[0][1] === REFUSED_MESSAGE
+      !none && refused.calls.length === 1 && refused.calls[0][1] === DEFAULT_FAILURE_MESSAGES.refused
+    );
+  } finally {
+    await channel.close();
+  }
+}
+
+/** Failures in the app reach the thread as specific, actionable messages. */
+async function failedTurns() {
+  const channel = initChannel({
+    config: {
+      expose: { agents: ['rateLimited', 'midStream'] },
+      box: { runner: { type: 'exec', cmd: ['node', failingApp] } },
+    },
+  });
+  const turn = (agent, reply) =>
+    runTurn({
+      agent: (handle) => channel.agent(agent, handle),
+      context: async () => ({}),
+      agentState: 'server',
+      sessionId: sessionId(agent),
+      input: 'hi',
+      reply,
+    });
+  try {
+    const limited = recorder();
+    await turn('rateLimited', limited.reply);
+    check(
+      '[failed] a quota error says to try again later',
+      limited.calls.at(-1)[0] === 'fail' &&
+        limited.calls.at(-1)[1] === DEFAULT_FAILURE_MESSAGES['rate-limited']
+    );
+    const partial = recorder();
+    await turn('midStream', partial.reply);
+    check(
+      '[failed] a mid-stream failure keeps what streamed, then adds the note',
+      partial.text() === 'partial reply' && partial.calls.at(-1)[0] === 'fail'
     );
   } finally {
     await channel.close();
@@ -339,7 +340,7 @@ run('slack', async () => {
   await bridge();
   await tracker();
   catchUp();
-  await queue();
   await turns();
   await guardedTurns();
+  await failedTurns();
 });

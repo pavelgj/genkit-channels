@@ -16,7 +16,7 @@
 
 /**
  * Unit tests for the Discord channel's pure helpers (session keys, mention
- * stripping, truncation, message gathering). No network, no discord.js.
+ * stripping, message gathering). No network, no discord.js.
  *
  * The Discord channel is written in TypeScript; the bridge is compiled to
  * `test/.build/discord/` first by test/build-channel-units.mjs (see the
@@ -26,12 +26,10 @@
  */
 
 import {
-  MAX_DISCORD_LEN,
   deriveSessionKey,
   formatGatheredMessages,
   stripMention,
-  truncate,
-  uuidv5,
+  turnMessages,
 } from './.build/discord/bridge.js';
 
 
@@ -44,17 +42,6 @@ function check(name, cond) {
     console.error(`  FAIL ${name}`);
   }
 }
-
-// ── uuidv5 ────────────────────────────────────────────────────────────────
-const u1 = uuidv5('discord:user:42');
-const u2 = uuidv5('discord:user:42');
-const u3 = uuidv5('discord:user:99');
-check('uuidv5 is deterministic', u1 === u2);
-check('uuidv5 differs by input', u1 !== u3);
-check(
-  'uuidv5 is a valid v5 uuid',
-  /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(u1)
-);
 
 // ── deriveSessionKey ────────────────────────────────────────────────────────
 check(
@@ -92,13 +79,6 @@ check(
   stripMention('  spaced  ', undefined) === 'spaced'
 );
 
-// ── truncate ────────────────────────────────────────────────────────────────
-check('truncate leaves short text', truncate('short') === 'short');
-const long = 'x'.repeat(MAX_DISCORD_LEN + 50);
-const cut = truncate(long);
-check('truncate respects the limit', cut.length === MAX_DISCORD_LEN);
-check('truncate appends an ellipsis', cut.endsWith('…'));
-
 // ── formatGatheredMessages ──────────────────────────────────────────────────
 check(
   'gather attributes senders by default',
@@ -119,6 +99,33 @@ check(
     { userName: 'alice', text: '  ' },
     { userName: 'bob', text: 'real' },
   ]) === '[bob]: real'
+);
+
+// ── turnMessages ────────────────────────────────────────────────────────────
+const m = (id, text = `t${id}`) => ({ id, userName: 'u', text });
+check(
+  'turn messages merge triggers and history, oldest first, once each',
+  turnMessages([m('30'), m('50')], [m('20'), m('30'), m('40'), m('50')])
+    .map((x) => x.id)
+    .join() === '20,30,40,50'
+);
+check(
+  'a trigger posted above the previous reply still counts',
+  turnMessages([m('15'), m('60')], [m('60')], '10')
+    .map((x) => x.id)
+    .join() === '15,60'
+);
+check(
+  'messages an earlier turn answered are left out',
+  turnMessages([m('60')], [m('20'), m('40'), m('60')], '40')
+    .map((x) => x.id)
+    .join() === '60'
+);
+check(
+  'snowflakes compare as numbers, not strings',
+  turnMessages([m('100000000000000000002')], [m('99999999999999999999')])
+    .map((x) => x.id)
+    .join() === '99999999999999999999,100000000000000000002'
 );
 
 if (failures > 0) {

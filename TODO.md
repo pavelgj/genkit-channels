@@ -19,7 +19,7 @@ Sorted, top to bottom. Details live in the GitHub issues (tracking issue [#41](h
 
 - [x] [#10](https://github.com/genkit-ai/genkit-channels/issues/10) Context providers: `defineContextProvider` shim and `expose.contextProvider`
 - [x] [#11](https://github.com/genkit-ai/genkit-channels/issues/11) HTTP channel: auth via context providers; merge `http` and `http-ts`
-- [ ] [#12](https://github.com/genkit-ai/genkit-channels/issues/12) Chat channel basics: split long replies, per-thread queue in Discord, specific errors
+- [x] [#12](https://github.com/genkit-ai/genkit-channels/issues/12) Chat channel basics: split long replies, per-thread queue in Discord, specific errors
 - [ ] [#13](https://github.com/genkit-ai/genkit-channels/issues/13) Durable conversation state for client-managed agents
 - [ ] [#14](https://github.com/genkit-ai/genkit-channels/issues/14) `genkit-channel check`, JSON Schema and spec for `channels.yaml`
 - [ ] [#15](https://github.com/genkit-ai/genkit-channels/issues/15) `update` and `outdated`: versioned, reproducible channel updates from GitHub
@@ -29,7 +29,7 @@ Sorted, top to bottom. Details live in the GitHub issues (tracking issue [#41](h
 
 - [ ] [#17](https://github.com/genkit-ai/genkit-channels/issues/17) MCP server channel
 - [ ] [#18](https://github.com/genkit-ai/genkit-channels/issues/18) AI SDK `useChat` / AG-UI channel
-- [ ] [#19](https://github.com/genkit-ai/genkit-channels/issues/19) Shared chat toolkit (`genkit-channels/chat`)
+- [ ] [#19](https://github.com/genkit-ai/genkit-channels/issues/19) Shared chat toolkit (`genkit-channels/chat`): inbox, splitting and failures are in; `chatBridge` waits on #13 and #16
 - [ ] [#20](https://github.com/genkit-ai/genkit-channels/issues/20) Attachments in and out (multimodal input, artifacts output)
 - [ ] [#21](https://github.com/genkit-ai/genkit-channels/issues/21) Typed `with` options from a channel-declared schema
 - [ ] [#22](https://github.com/genkit-ai/genkit-channels/issues/22) Observability and robustness: trace links, box lifecycle, log tagging, drain
