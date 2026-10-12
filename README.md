@@ -10,9 +10,6 @@ same channel code works whichever box you pick, and against a JS, Go, or Python
 app. This package is both a CLI and a small helper library that channel authors
 build on.
 
-For the rationale, architecture, and open questions, see
-[docs/DESIGN.md](docs/DESIGN.md).
-
 ## Install
 
 ```bash
@@ -323,41 +320,6 @@ On Cloud Run, `single-container` packaging boxes the app as a subprocess in
 the channel's container. `sidecar` runs the app in its own container serving
 reflection on loopback, and the channel reaches it with a `remote` runner.
 
-## Overhead
-
-A fair question about this model: the channel runs your app as a second process
-and talks to it over a loopback reflection v2 hop, so what does that cost? We
-measured it against a **real Genkit app** (`genkit.Init` + `DefineFlow`) serving
-a trivial echo flow, so the numbers isolate the serving path from model latency.
-Full methodology and results: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
-
-Headline numbers (Apple Silicon, loopback; deltas are the point, not absolutes):
-
-| Metric              | Native Genkit | Go channel      | Node channel     |
-| ------------------- | ------------- | --------------- | ---------------- |
-| Latency p50         | 0.051 ms      | 0.106 ms        | 0.119 ms         |
-| Added latency p50   | baseline      | +0.055 ms       | +0.068 ms        |
-| Cold start (median) | 69.6 ms       | 101.6 ms        | 161.1 ms         |
-| Added cold start    | baseline      | +32.0 ms        | +91.4 ms         |
-| Idle RSS (+ child)  | 15.6 MB       | 28.2 MB         | 81.4 MB          |
-
-What this means in practice:
-
-- **Per-request cost is negligible.** The channel adds roughly **50-70
-  microseconds** to a request. Against a real model call of hundreds of
-  milliseconds to seconds, that is about 0.01% of the request, invisible in a
-  trace unless you look for it.
-- **Cold start adds a process spawn plus the register handshake.** For a compiled
-  Go channel that is about 32 ms on top of the framework's own boot; for the Node
-  channel about 91 ms (mostly Node runtime and module load). This is the number
-  that matters most on scale-to-zero platforms like Cloud Run.
-- **Memory is dominated by the channel's own runtime.** The Go channel plus its
-  child idles around 28 MB; the Node channel plus the same child around 81 MB.
-
-These numbers predate the move to `@genkit-ai/box` (and the Go channel has
-since been removed) and were measured with the child in `GENKIT_ENV=dev`. Boxed apps now run with production defaults and an
-authenticated link; the numbers need re-measuring.
-
 ## Layout
 
 ```
@@ -373,12 +335,8 @@ genkit-channels/
     discord-agent-dir/      a runtime-less Discord bot (just a folder of prompts)
     agent-dir-basic/        a runtime-less agent (just a folder of prompts)
     agent-dir-custom/       an agent-dir runtime with a custom tool
-  bench/                    overhead benchmark harness (real Genkit app)
-
-  docs/                     DESIGN.md, BENCHMARKS.md
   test/                     tests, a fake reflection runtime, a real echo app
 ```
-
 
 ## Develop
 

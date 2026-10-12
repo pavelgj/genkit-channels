@@ -10,8 +10,8 @@ Sorted, top to bottom. Details live in the GitHub issues (tracking issue [#41](h
 
 ## Release blockers
 
-- [ ] [#6](https://github.com/genkit-ai/genkit-channels/issues/6) Add LICENSE (`bin` path and CLI name fixed with #3)
-- [ ] [#7](https://github.com/genkit-ai/genkit-channels/issues/7) README links to docs/ and bench/ that don't exist
+- [x] [#6](https://github.com/genkit-ai/genkit-channels/issues/6) Fix `bin` path, add LICENSE, use one CLI name
+- [x] [#7](https://github.com/genkit-ai/genkit-channels/issues/7) README links to docs/ and bench/ that don't exist. Dropped the Overhead section until benchmarks are re-measured on box
 - [ ] [#8](https://github.com/genkit-ai/genkit-channels/issues/8) CI: build and tests on PRs, live tests on a schedule
 - [ ] [#9](https://github.com/genkit-ai/genkit-channels/issues/9) Publish the `genkit-channels` library to npm; channels declare compatible versions
 
