@@ -22,6 +22,10 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
+    "./app": {
+      "types": "./dist/app/index.d.ts",
+      "default": "./dist/app/index.js"
+    },
     "./agent-dir": {
       "types": "./dist/agent-dir/index.d.ts",
       "default": "./dist/agent-dir/index.js"
@@ -35,7 +39,7 @@
     "build": "tsc",
     "build:watch": "tsc --watch",
     "smoke": "node test/smoke.mjs",
-    "test": "node test/config.mjs && node test/secrets.mjs && node test/smoke.mjs && node test/agent.mjs && node test/box-routing.mjs && node test/real-app.mjs && npm run test:units && node test/packaging.mjs && node test/service-settings.mjs",
+    "test": "node test/config.mjs && node test/secrets.mjs && node test/smoke.mjs && node test/agent.mjs && node test/box-routing.mjs && node test/context.mjs && node test/real-app.mjs && npm run test:units && node test/packaging.mjs && node test/service-settings.mjs",
     "test:live": "node test/agent-dir.mjs && node test/live.mjs",
     "test:units": "node test/build-channel-units.mjs && node test/discord-bridge.mjs && node test/slack.mjs"
   },

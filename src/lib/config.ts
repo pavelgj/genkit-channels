@@ -120,15 +120,22 @@ export const BoxConfigSchema = z
   .strict();
 export type BoxConfig = z.infer<typeof BoxConfigSchema>;
 
+/** What a deployment exposes through the channel, resolved. */
+export const ExposeSchema = z.object({
+  agents: z.array(z.string()).default([]),
+  flows: z.array(z.string()).default([]),
+  /**
+   * Name of the app's context provider (`defineContextProvider`). The channel
+   * runs it per call (`channel.context()`) to get auth and caller identity.
+   */
+  contextProvider: z.string().min(1).optional(),
+});
+export type Expose = z.output<typeof ExposeSchema>;
+
 /** The resolved per-deployment config `initChannel` reads. */
 export const ChannelConfigSchema = z.object({
   /** Which agents/flows the deployment exposes through the channel. */
-  expose: z
-    .object({
-      agents: z.array(z.string()).default([]),
-      flows: z.array(z.string()).default([]),
-    })
-    .default({}),
+  expose: ExposeSchema.default({}),
   /** State ownership per agent. Unlisted agents default to `server`. */
   agentState: z.record(AgentStateSchema).default({}),
   /** Channel-specific options (the deployment's `with` block). */

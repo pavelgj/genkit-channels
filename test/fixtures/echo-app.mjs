@@ -20,10 +20,23 @@
  * turned on by whoever starts it (a box runner sets GENKIT_REFLECTION_*).
  */
 
-import { z } from 'genkit';
+import { UserFacingError, z } from 'genkit';
 import { genkit, InMemorySessionStore } from 'genkit/beta';
+import { defineContextProvider } from '../../dist/app/index.js';
 
 const ai = genkit({});
+
+// `Bearer ok` passes; no header is UNAUTHENTICATED, a wrong one
+// PERMISSION_DENIED.
+defineContextProvider(ai, { name: 'auth' }, async (req) => {
+  const header = req.headers['authorization'];
+  if (!header) throw new UserFacingError('UNAUTHENTICATED', 'sign in first');
+  if (header !== 'Bearer ok') throw new UserFacingError('PERMISSION_DENIED', 'not you');
+  return { auth: { uid: req.channel?.user?.id ?? 'http-user' }, method: req.method };
+});
+
+// Returns the action context the call carried (auth from the provider).
+ai.defineFlow({ name: 'whoami' }, async (_input, { context }) => ({ context }));
 
 const echoModel = ai.defineModel({ name: 'echo' }, async (req, sendChunk) => {
   const last = req.messages.at(-1);

@@ -69,3 +69,7 @@ for (const [channel, files] of Object.entries(units)) {
 }
 // The channels are ESM; the repo root is CommonJS.
 fs.writeFileSync(path.join(out, 'package.json'), '{ "type": "module" }\n');
+// Runtime imports of `genkit-channels` (turn.ts uses isAuthError) resolve to
+// this checkout, as `linkLocalLibrary` arranges for a real channel install.
+fs.mkdirSync(path.join(out, 'node_modules'), { recursive: true });
+fs.symlinkSync(root, path.join(out, 'node_modules', 'genkit-channels'), 'dir');

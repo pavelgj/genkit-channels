@@ -32,7 +32,8 @@ npm link            # exposes `genkit-channel` (alias `genkit-channels`) on your
   `expose`, channel options (`with`), how the app is boxed (`box`), and an
   optional deploy target.
 - **Helper library** (`initChannel`): what a channel calls to get proxies for
-  your app's agents and flows.
+  your app's agents and flows. Apps import `genkit-channels/app` for
+  app-side helpers such as `defineContextProvider`.
 
 In these docs a bare "channel" always means the above. Slack and Discord
 channels are always called "Slack channel" or "Discord channel".
@@ -238,6 +239,53 @@ overrides a same-named dir agent.
 See `samples/agent-dir-basic/` (no runtime) and `samples/agent-dir-custom/`
 (runtime with a custom tool).
 
+## Authenticating callers (context providers)
+
+The app decides who may call it. Define a context provider in the app and
+select it by name on the deployment:
+
+```ts
+import { UserFacingError } from 'genkit';
+import { defineContextProvider } from 'genkit-channels/app';
+
+defineContextProvider(ai, { name: 'auth' }, async (req) => {
+  const user = await verifyIdToken(req.headers['authorization']);
+  if (!user) throw new UserFacingError('UNAUTHENTICATED', 'sign in first');
+  return { auth: { uid: user.uid } };
+});
+```
+
+```yaml
+    expose:
+      agent: helper
+      contextProvider: auth
+```
+
+The channel runs the provider before every agent turn and flow call. What it
+returns becomes the action context, so tools and flows read it as `context`:
+
+```ts
+ai.defineTool({ name: 'listMyNotes' /* ... */ }, async (_input, { context }) =>
+  notesFor(context.auth?.uid)
+);
+```
+
+The provider gets a `ChannelRequest`: `method`, `headers` (lowercase names) and
+`input` from HTTP channels. Chat channels have no headers and describe the
+caller in `channel` instead (`{ platform: 'slack', user: { id }, tenant }`).
+Throw `UNAUTHENTICATED` or `PERMISSION_DENIED` to refuse: HTTP channels answer
+401 or 403, chat channels reply with a short refusal. genkit's own providers fit
+as is, for example `apiKey(process.env.API_KEY)` from `genkit/context`.
+
+The provider runs in the app's shared box, so a refused caller never starts a
+per-session box (`route: session`). Under `route: request` it costs a box start
+per call, like any other call.
+
+Go and Python apps: define a flow named `contextProvider/<name>` that takes a
+`ChannelRequest` and returns a JSON object.
+
+See `samples/http-auth/` for an agent and a flow behind API keys.
+
 ## Writing a channel
 
 
@@ -276,6 +324,30 @@ const { stream, output } = channel.flow('summarize').stream(input, {
 
 // On shutdown: stop every box the channel started.
 await channel.close();
+```
+
+Run the app's context provider for every incoming call and pass the result on.
+`channel.context()` resolves to `{}` when the deployment has none, so always
+call it:
+
+```ts
+import { httpStatusFor, isAuthError } from 'genkit-channels';
+
+// HTTP: method, headers, body.
+try {
+  const context = await channel.context({ method: req.method, headers: req.headers, input: req.body });
+  const agent = channel.agent(name, { sessionId, context });
+  // ...
+} catch (e) {
+  res.status(httpStatusFor(e)).json({ error: { message: String(e) } }); // 401, 403, 400, ..., 500
+}
+
+// Chat: no headers, describe the caller instead.
+const context = await channel.context({
+  input: text,
+  channel: { platform: 'slack', user: { id: userId }, tenant: teamId },
+});
+// On a refusal, isAuthError(e) is true: reply with a short "not allowed".
 ```
 
 A few more things are available when you need them:
@@ -335,6 +407,7 @@ genkit-channels/
     discord-agent-dir/      a runtime-less Discord bot (just a folder of prompts)
     agent-dir-basic/        a runtime-less agent (just a folder of prompts)
     agent-dir-custom/       an agent-dir runtime with a custom tool
+    http-auth/              an agent and a flow behind a context provider (API keys)
   test/                     tests, a fake reflection runtime, a real echo app
 ```
 

@@ -185,6 +185,11 @@ function validateDeployment(
     expose.agentState,
     `${where}.expose.agentState`
   );
+  const contextProvider = parseOrThrow(
+    z.string().min(1).optional(),
+    expose.contextProvider,
+    `${where}.expose.contextProvider`
+  );
   const box = parseOrThrow(
     BoxConfigSchema.optional(),
     d.box,
@@ -211,6 +216,7 @@ function validateDeployment(
       agents: expose.agents,
       flows: expose.flows,
       agentState,
+      contextProvider,
     },
     box,
 

@@ -27,8 +27,16 @@ export {
   initChannel,
   type AgentHandleOptions,
   type Channel,
+  type ContextRequest,
   type InitChannelOptions,
 } from './lib/channel';
+
+export {
+  contextProviderFlowName,
+  type ChannelCaller,
+  type ChannelRequest,
+  type ChannelRequestMethod,
+} from './lib/channel-request';
 
 export {
   BoxConfigSchema,
@@ -37,8 +45,14 @@ export {
   type BoxConfig,
   type ChannelConfig,
   type ChannelConfigInput,
+  type Expose,
   type RunnerConfig,
 } from './lib/config';
+
+export { errorStatus, httpStatusFor, isAuthError } from './lib/errors';
+
+// What `channel.context()` returns and agent/flow calls accept.
+export type { ActionContext } from 'genkit';
 
 // The agent client surface, so channels can annotate against it without a
 // direct genkit/beta import.

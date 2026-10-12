@@ -26,6 +26,10 @@
  * Add `?stream=true` for newline-delimited JSON chunks followed by a final
  * `{ "result": ... }` line.
  *
+ * With `expose.contextProvider` set, every request first goes through the
+ * app's context provider (method, headers, body); a refusal becomes a 401 or
+ * 403, and the resulting context rides along on the call.
+ *
  * Routes come from config, not discovery: the app runs in a box that may not
  * be running yet (or may run per session), so the channel never asks it what
  * it has. `initChannel()` hands back lazy proxies; the box starts on the first
@@ -38,7 +42,9 @@ import express, {
   type Response,
 } from 'express';
 import {
+  httpStatusFor,
   initChannel,
+  type ActionContext,
   type AgentChat,
   type Channel,
   type SessionState,
@@ -90,10 +96,17 @@ async function main(): Promise<void> {
     });
     const stream = req.query.stream === 'true' || req.query.stream === '1';
     try {
+      // `{}` when the deployment has no context provider.
+      const context = await channel.context({
+        method: req.method,
+        headers: req.headers,
+        input: req.body,
+      });
+      const call: Call = { req, res, stream, abortSignal: ac.signal, context };
       if (route.kind === 'flow') {
-        await handleFlow(channel, route.name, req, res, stream, ac.signal);
+        await handleFlow(channel, route.name, call);
       } else {
-        await handleAgent(channel, route.name, req, res, stream, ac.signal);
+        await handleAgent(channel, route.name, call);
       }
     } catch (e) {
       sendError(res, e);
@@ -118,23 +131,29 @@ async function main(): Promise<void> {
   process.on('SIGINT', () => shutdown('SIGINT'));
 }
 
+/** One request, after the context provider let it through. */
+interface Call {
+  req: Request;
+  res: Response;
+  stream: boolean;
+  abortSignal: AbortSignal;
+  context: ActionContext;
+}
+
 async function handleFlow(
   channel: Channel,
   name: string,
-  req: Request,
-  res: Response,
-  stream: boolean,
-  abortSignal: AbortSignal
+  { req, res, stream, abortSignal, context }: Call
 ): Promise<void> {
   const flow = channel.flow(name);
   const input: unknown = req.body?.data ?? req.body;
   if (!stream) {
-    const { result } = await flow.run(input, { abortSignal });
+    const { result } = await flow.run(input, { abortSignal, context });
     res.json({ result });
     return;
   }
   startStream(res);
-  const { stream: chunks, output } = flow.stream(input, { abortSignal });
+  const { stream: chunks, output } = flow.stream(input, { abortSignal, context });
   for await (const chunk of chunks) res.write(JSON.stringify(chunk) + '\n');
   res.end(JSON.stringify({ result: await output }) + '\n');
 }
@@ -157,10 +176,7 @@ interface AgentRequestBody {
 async function handleAgent(
   channel: Channel,
   name: string,
-  req: Request,
-  res: Response,
-  stream: boolean,
-  abortSignal: AbortSignal
+  { req, res, stream, abortSignal, context }: Call
 ): Promise<void> {
   const body: AgentRequestBody = req.body ?? {};
   if (typeof body.message !== 'string' || !body.message) {
@@ -178,7 +194,7 @@ async function handleAgent(
     typeof body.sessionId === 'string'
       ? body.sessionId
       : (state?.sessionId ?? randomUUID());
-  const agent = channel.agent(name, { sessionId });
+  const agent = channel.agent(name, { sessionId, context });
   const chat: AgentChat =
     channel.agentState(name) === 'client'
       ? agent.chat(state ? { state } : undefined)
@@ -214,20 +230,14 @@ function startStream(res: Response): void {
 
 function sendError(res: Response, e: unknown): void {
   const message = e instanceof Error ? e.message : String(e);
-  // Reflection reports invalid input as status INVALID_ARGUMENT (code 3).
-  const status = errorCode(e) === 3 ? 400 : 500;
+  // The app's error status, mapped: UNAUTHENTICATED 401, PERMISSION_DENIED
+  // 403, INVALID_ARGUMENT 400, ..., anything else 500.
+  const status = httpStatusFor(e);
   if (!res.headersSent) {
     res.status(status).json({ error: { message } });
   } else if (!res.writableEnded) {
     res.end(JSON.stringify({ error: { message } }) + '\n');
   }
-}
-
-function errorCode(e: unknown): number | undefined {
-  if (!isObject(e) || !('data' in e)) return undefined;
-  const data = e.data;
-  if (!isObject(data) || !('code' in data)) return undefined;
-  return typeof data.code === 'number' ? data.code : undefined;
 }
 
 main().catch((e) => {

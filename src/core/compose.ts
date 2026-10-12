@@ -49,6 +49,7 @@ import {
 import {
   CHANNEL_CONFIG_FILENAME,
   type ChannelConfigInput,
+  type Expose,
 } from '../lib/config';
 import { buildChannelConfig } from './channel-config';
 import { resolveSecrets, secretLikeNames } from './secrets';
@@ -95,10 +96,12 @@ export async function compose(
         deployment.runtime!
       );
 
-  const expose = {
-
+  const expose: Expose = {
     agents: resolveAgents(deployment),
     flows: resolveFlows(deployment),
+    ...(deployment.expose?.contextProvider
+      ? { contextProvider: deployment.expose.contextProvider }
+      : {}),
   };
   const env = Array.from(
     new Set([...(channel.env ?? []), ...(deployment.env ?? [])])

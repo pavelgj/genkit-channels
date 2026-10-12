@@ -41,7 +41,13 @@ import {
   Partials,
   type SendableChannels,
 } from 'discord.js';
-import { initChannel, type AgentChat, type AgentResponse } from 'genkit-channels';
+import {
+  initChannel,
+  isAuthError,
+  type ActionContext,
+  type AgentChat,
+  type AgentResponse,
+} from 'genkit-channels';
 import { createServer } from 'node:http';
 import {
   deriveSessionKey,
@@ -175,7 +181,26 @@ async function main(): Promise<void> {
     const input = formatGatheredMessages(gathered, { includeSenderName });
     if (!input) return;
 
-    await runTurn({ sessionKey, sessionId, channel: msg.channel, input });
+    // `{}` unless the deployment sets `expose.contextProvider`. A refused
+    // caller gets one short reply and the agent never runs.
+    let context: ActionContext;
+    try {
+      context = await app.context({
+        input,
+        channel: {
+          platform: 'discord',
+          user: { id: msg.author.id, displayName: msg.author.username },
+          ...(msg.guildId ? { tenant: msg.guildId } : {}),
+        },
+      });
+    } catch (e) {
+      if (!isAuthError(e)) throw e;
+      console.log(`[channel:discord] refused ${msg.author.id}: ${(e as Error).message}`);
+      await msg.reply("Sorry, you aren't allowed to use this bot.").catch(() => {});
+      return;
+    }
+
+    await runTurn({ sessionKey, sessionId, channel: msg.channel, input, context });
   }
 
   /**
@@ -224,15 +249,17 @@ async function main(): Promise<void> {
     sessionId,
     channel,
     input,
+    context,
   }: {
     sessionKey: string;
     sessionId: string;
     channel: Message['channel'];
     input: string;
+    context: ActionContext;
   }): Promise<void> {
     // One handle per conversation: with `box.route: session` every call of
     // this conversation goes to its own box. Handles are cheap.
-    const agent = app.agent(agentName, { sessionId });
+    const agent = app.agent(agentName, { sessionId, context });
     const chat: AgentChat =
       agentState === 'client'
         ? agent.chat({ state: clientState.get(sessionKey) })

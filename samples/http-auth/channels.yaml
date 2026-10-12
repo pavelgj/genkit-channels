@@ -1,0 +1,24 @@
+# An agent and a flow over HTTP, with callers authenticated by the app's
+# context provider. Install the channel first, then run it locally:
+#
+#   genkit-channel add ../../channels http
+#   genkit-channel dev notes
+#
+deployments:
+  - name: notes
+    channel: http
+    runtime:
+      language: js
+      command: node
+      args: [index.mjs]
+    expose:
+      agent: notesAgent
+      flows: [whoami]
+      # No session store: the caller round-trips the conversation state.
+      agentState:
+        notesAgent: client
+      # Runs before every request: defineContextProvider(ai, { name: 'apiKey' })
+      # in index.mjs. Its result is the action context tools and flows see.
+      contextProvider: apiKey
+    # Both go to the app only. Locally they come from .env.local.
+    secrets: [GEMINI_API_KEY, API_KEYS]

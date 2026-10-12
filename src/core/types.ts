@@ -26,6 +26,7 @@ import type {
   AgentState,
   BoxConfig,
   ChannelConfigInput,
+  Expose,
 } from '../lib/config';
 import type { DeploymentSecrets, ResolvedSecret } from './secrets';
 
@@ -131,6 +132,12 @@ export interface ExposeConfig {
    * `client` (the caller round-trips the state).
    */
   agentState?: Record<string, AgentState>;
+  /**
+   * Name of the app's context provider (`defineContextProvider(ai, { name })`
+   * in JS, a `contextProvider/<name>` flow in Go/Python). The channel runs it
+   * on every call to authenticate the caller.
+   */
+  contextProvider?: string;
 }
 
 /**
@@ -333,7 +340,7 @@ export interface ComposeContext {
   /** Raw manifest entry. */
   deployment: DeploymentManifest;
   /** Resolved expose filter. */
-  expose: { agents: string[]; flows: string[] };
+  expose: Expose;
   /** Passthrough of `deployment.with`. */
   config: Record<string, unknown>;
   /** Env var names (manifest env + channel env). */
@@ -402,7 +409,7 @@ export interface ComposePlan {
   /** Resolved channel (entry + channel image build plan). */
   channel: ChannelPlan;
   /** Resolved expose filter. */
-  expose: { agents: string[]; flows: string[] };
+  expose: Expose;
   /** Passthrough of `deployment.with`. */
   config: Record<string, unknown>;
   /** Env var names to forward (channel env + manifest env). */

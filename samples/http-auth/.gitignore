@@ -1,0 +1,5 @@
+.genkit/
+node_modules/
+package-lock.json
+# Local secrets (see .env.example).
+.env*.local

@@ -1,0 +1,15 @@
+{
+  "name": "http-auth-sample",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "A Genkit agent and flow over HTTP, with callers authenticated by a context provider (genkit-channels).",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@genkit-ai/google-genai": "^1.43.0-rc.1",
+    "genkit": "^1.43.0-rc.1",
+    "genkit-channels": "file:../.."
+  }
+}

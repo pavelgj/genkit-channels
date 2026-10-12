@@ -19,7 +19,13 @@
  * Slack, so tests drive it with a real (echo) agent and a recording reply.
  */
 
-import type { AgentAPI, AgentResponse } from 'genkit-channels';
+import {
+  isAuthError,
+  type ActionContext,
+  type AgentAPI,
+  type AgentHandleOptions,
+  type AgentResponse,
+} from 'genkit-channels';
 
 /** Where a turn's output goes (a Slack thread, in production). */
 export interface Reply {
@@ -37,9 +43,16 @@ export interface Reply {
 export type ClientStateStore = Map<string, AgentResponse['raw']['state']>;
 
 export const FAILURE_MESSAGE = 'Sorry, something went wrong. Please try again.';
+export const REFUSED_MESSAGE = "Sorry, you aren't allowed to use this bot.";
 
 export async function runTurn(opts: {
-  agent: AgentAPI;
+  /** The agent handle for this conversation, given the caller's context. */
+  agent: (opts: AgentHandleOptions) => AgentAPI;
+  /**
+   * Who is asking, as action context (`channel.context(...)`). Resolved before
+   * anything is posted, so a refused caller gets one short message.
+   */
+  context: () => Promise<ActionContext>;
   agentState: 'server' | 'client';
   sessionKey: string;
   sessionId: string;
@@ -48,7 +61,18 @@ export async function runTurn(opts: {
   clientState: ClientStateStore;
   log?: (msg: string) => void;
 }): Promise<AgentResponse | undefined> {
-  const { agent, agentState, sessionKey, sessionId, input, reply, clientState } = opts;
+  const { agentState, sessionKey, sessionId, input, reply, clientState } = opts;
+  let context: ActionContext;
+  try {
+    context = await opts.context();
+  } catch (e) {
+    opts.log?.(`caller refused: ${(e as Error).message}`);
+    await reply.fail(isAuthError(e) ? REFUSED_MESSAGE : FAILURE_MESSAGE).catch(() => {});
+    return undefined;
+  }
+  // One handle per conversation, so `box.route: session` gives each thread
+  // its own box.
+  const agent = opts.agent({ sessionId, context });
   const chat =
     agentState === 'client'
       ? agent.chat({ state: clientState.get(sessionKey) })

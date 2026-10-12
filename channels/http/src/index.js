@@ -26,12 +26,15 @@
  * Add `?stream=true` for newline-delimited JSON chunks followed by a final
  * `{ "result": ... }` line.
  *
+ * With `expose.contextProvider` set, every request first goes through the
+ * app's context provider; a refusal becomes a 401 or 403.
+ *
  * Routes come from config, not discovery: the app runs in a box that may not
  * be running yet, so the channel never asks it what it has.
  */
 
 import express from 'express';
-import { initChannel } from 'genkit-channels';
+import { httpStatusFor, initChannel } from 'genkit-channels';
 import { randomUUID } from 'node:crypto';
 
 async function main() {
@@ -74,10 +77,17 @@ async function main() {
     });
     const stream = req.query.stream === 'true' || req.query.stream === '1';
     try {
+      // `{}` when the deployment has no context provider.
+      const context = await channel.context({
+        method: req.method,
+        headers: req.headers,
+        input: req.body,
+      });
+      const call = { req, res, stream, abortSignal: ac.signal, context };
       if (route.kind === 'flow') {
-        await handleFlow(channel, route.name, req, res, stream, ac.signal);
+        await handleFlow(channel, route.name, call);
       } else {
-        await handleAgent(channel, route.name, req, res, stream, ac.signal);
+        await handleAgent(channel, route.name, call);
       }
     } catch (e) {
       sendError(res, e);
@@ -102,16 +112,16 @@ async function main() {
   process.on('SIGINT', () => shutdown('SIGINT'));
 }
 
-async function handleFlow(channel, name, req, res, stream, abortSignal) {
+async function handleFlow(channel, name, { req, res, stream, abortSignal, context }) {
   const flow = channel.flow(name);
   const input = req.body?.data ?? req.body;
   if (!stream) {
-    const { result } = await flow.run(input, { abortSignal });
+    const { result } = await flow.run(input, { abortSignal, context });
     res.json({ result });
     return;
   }
   startStream(res);
-  const { stream: chunks, output } = flow.stream(input, { abortSignal });
+  const { stream: chunks, output } = flow.stream(input, { abortSignal, context });
   for await (const chunk of chunks) res.write(JSON.stringify(chunk) + '\n');
   res.end(JSON.stringify({ result: await output }) + '\n');
 }
@@ -121,7 +131,7 @@ async function handleFlow(channel, name, req, res, stream, abortSignal) {
  * `sessionId`; client-managed agents expect the caller to send back the
  * `state` from the previous response.
  */
-async function handleAgent(channel, name, req, res, stream, abortSignal) {
+async function handleAgent(channel, name, { req, res, stream, abortSignal, context }) {
   const body = req.body ?? {};
   if (typeof body.message !== 'string' || !body.message) {
     res
@@ -132,7 +142,7 @@ async function handleAgent(channel, name, req, res, stream, abortSignal) {
   // Pick the session id up front so even the first turn routes to the
   // conversation's box under `box.route: session`.
   const sessionId = body.sessionId ?? body.state?.sessionId ?? randomUUID();
-  const agent = channel.agent(name, { sessionId });
+  const agent = channel.agent(name, { sessionId, context });
   const chat =
     channel.agentState(name) === 'client'
       ? agent.chat(body.state ? { state: body.state } : undefined)
@@ -164,8 +174,8 @@ function startStream(res) {
 
 function sendError(res, e) {
   const message = e?.message ?? String(e);
-  // Reflection reports invalid input as status INVALID_ARGUMENT (code 3).
-  const status = e?.data?.code === 3 ? 400 : 500;
+  // UNAUTHENTICATED 401, PERMISSION_DENIED 403, INVALID_ARGUMENT 400, ...
+  const status = httpStatusFor(e);
   if (!res.headersSent) {
     res.status(status).json({ error: { message } });
   } else if (!res.writableEnded) {

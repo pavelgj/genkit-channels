@@ -24,9 +24,9 @@ recommends:
 # config, env, child). A falsy `validate` result fails the deploy; a truthy
 # `warn` result logs a warning.
 warn:
-  # Endpoints are publicly reachable unless auth is configured in `with`.
+  # Without a context provider every caller is let through.
   - expr: >-
-      $not($exists(config.auth))
+      $not($exists(expose.contextProvider))
     message: >-
-      no auth configured (deployment.with.auth); the HTTP endpoints will be
-      publicly reachable
+      no auth configured (expose.contextProvider); anyone who can reach the
+      endpoints can call them

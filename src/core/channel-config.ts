@@ -32,14 +32,19 @@
  */
 
 import path from 'path';
-import type { BoxConfig, ChannelConfigInput, RunnerConfig } from '../lib/config';
+import type {
+  BoxConfig,
+  ChannelConfigInput,
+  Expose,
+  RunnerConfig,
+} from '../lib/config';
 import type { ResolvedSecret } from './secrets';
 import type { DeploymentManifest, ResolvedRuntime } from './types';
 
 export interface ChannelConfigParts {
   deployment: DeploymentManifest;
   runtime: ResolvedRuntime;
-  expose: { agents: string[]; flows: string[] };
+  expose: Expose;
   /** Every secret of the deployment, routed to channel or app. */
   secrets: readonly ResolvedSecret[];
   /**

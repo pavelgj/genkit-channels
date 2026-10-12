@@ -38,7 +38,7 @@ import {
   truncate,
   uuidv5,
 } from './.build/slack-socket/bridge.js';
-import { FAILURE_MESSAGE, runTurn } from './.build/slack-socket/turn.js';
+import { FAILURE_MESSAGE, REFUSED_MESSAGE, runTurn } from './.build/slack-socket/turn.js';
 import { initChannel } from '../dist/index.js';
 import { check, run } from './helpers.mjs';
 
@@ -246,9 +246,9 @@ async function turns() {
   const turn = (agentState, key, input, reply) => {
     const sessionId = uuidv5(key);
     return runTurn({
-      agent: channel.agent(agentState === 'server' ? 'echoAgent' : 'echoClientAgent', {
-        sessionId,
-      }),
+      agent: (handle) =>
+        channel.agent(agentState === 'server' ? 'echoAgent' : 'echoClientAgent', handle),
+      context: () => channel.context({ input, channel: { platform: 'slack', user: { id: 'U1' } } }),
       agentState,
       sessionKey: key,
       sessionId,
@@ -297,10 +297,49 @@ async function turns() {
   }
 }
 
+/** `expose.contextProvider`: the echo app lets `Bearer ok` through. */
+async function guardedTurns() {
+  const channel = initChannel({
+    config: {
+      expose: { agents: ['echoAgent'], contextProvider: 'auth' },
+      box: { runner: { type: 'exec', cmd: ['node', echoApp] } },
+    },
+  });
+  const turn = (headers, reply) =>
+    runTurn({
+      agent: (handle) => channel.agent('echoAgent', handle),
+      // Slack has no headers; the test stands in for a provider that checks
+      // something the caller sent (a real one would look at `channel.user`).
+      context: () =>
+        channel.context({ headers, input: 'hi', channel: { platform: 'slack', user: { id: 'U7' } } }),
+      agentState: 'server',
+      sessionKey: 'k',
+      sessionId: uuidv5('guarded'),
+      input: 'hi',
+      reply,
+      clientState: new Map(),
+    });
+  try {
+    const ok = recorder();
+    const res = await turn({ authorization: 'Bearer ok' }, ok.reply);
+    check('[guarded] an allowed caller gets a reply', res?.text === 'echo:hi');
+
+    const refused = recorder();
+    const none = await turn({ authorization: 'Bearer nope' }, refused.reply);
+    check(
+      '[guarded] a refused caller gets the refusal, and nothing else',
+      !none && refused.calls.length === 1 && refused.calls[0][1] === REFUSED_MESSAGE
+    );
+  } finally {
+    await channel.close();
+  }
+}
+
 run('slack', async () => {
   await bridge();
   await tracker();
   catchUp();
   await queue();
   await turns();
+  await guardedTurns();
 });

@@ -49,13 +49,36 @@ import {
 } from 'genkit';
 import type { AgentAPI } from 'genkit/beta';
 import {
+  CHANNEL_REQUEST_METHODS,
+  contextProviderFlowName,
+  type ChannelCaller,
+  type ChannelRequest,
+  type ChannelRequestMethod,
+} from './channel-request';
+import {
   loadChannelConfigFile,
   parseChannelConfig,
   type AgentState,
   type ChannelConfig,
   type ChannelConfigInput,
+  type Expose,
 } from './config';
 import { buildBoxOptions, buildRunner } from './runner';
+
+/**
+ * What a channel passes to {@link Channel.context}. Loose on purpose so
+ * framework objects fit as is: Node's `req.headers` (array values, any case),
+ * Express's `req.method` (a string).
+ */
+export interface ContextRequest {
+  /** Defaults to `POST`. Case-insensitive. */
+  method?: string;
+  headers?: Record<string, string | string[] | undefined>;
+  /** The call's payload: an HTTP body, a chat message's text, ... */
+  input?: unknown;
+  /** Chat transports: who is calling, since there are no headers. */
+  channel?: ChannelCaller;
+}
 
 export interface InitChannelOptions {
   /**
@@ -91,8 +114,11 @@ export interface AgentHandleOptions {
 
 /** The channel's handle on the user's app. */
 export interface Channel<Options = Record<string, unknown>> {
-  /** Which agents and flows the deployment exposes. */
-  readonly expose: { readonly agents: string[]; readonly flows: string[] };
+  /**
+   * Which agents and flows the deployment exposes, and the context provider
+   * that guards them (if any).
+   */
+  readonly expose: Readonly<Expose>;
   /**
    * Channel-specific options: the deployment's `with` block. Not validated
    * against `Options`; channels should treat every field as optional.
@@ -120,6 +146,24 @@ export interface Channel<Options = Record<string, unknown>> {
    * need the caller to round-trip `state`.
    */
   agentState(name: string): AgentState;
+  /**
+   * Runs the app's context provider (`expose.contextProvider`) for one
+   * incoming call and returns the action context to pass on. Resolves to `{}`
+   * when none is configured, so channels can always call it.
+   *
+   * Rejects with the provider's error when it refuses the caller; check it
+   * with `isAuthError(e)` or map it with `httpStatusFor(e)` (401/403).
+   *
+   * ```ts
+   * const context = await channel.context({ method: req.method, headers: req.headers, input: req.body });
+   * const agent = channel.agent(name, { sessionId, context });
+   * ```
+   *
+   * The provider runs on the shared box (`route: session`) or the app's one
+   * box, so a refused caller never starts a session box. Under
+   * `route: request` it costs a box start per call, like everything else.
+   */
+  context(request: ContextRequest): Promise<ActionContext>;
   /** A proxy for a flow in the app. Sync: the box starts on the first call. */
   flow(name: string): Flow;
   /**
@@ -166,7 +210,7 @@ export function initChannel<Options = Record<string, unknown>>(
 }
 
 class ChannelImpl<Options> implements Channel<Options> {
-  readonly expose: { readonly agents: string[]; readonly flows: string[] };
+  readonly expose: Readonly<Expose>;
   readonly options: Options;
   readonly ai: Genkit;
   readonly box: Box;
@@ -229,8 +273,11 @@ class ChannelImpl<Options> implements Channel<Options> {
       ? { ...opts.context, sessionId: opts.sessionId }
       : opts?.context;
     // Box proxies are untyped on the wire; the caller declares the agent's
-    // custom state type.
-    if (context) return this.box.agent<State>({ name: resolved, context });
+    // custom state type. An empty context (`context()` without a provider)
+    // reuses the shared handle.
+    if (context && Object.keys(context).length > 0) {
+      return this.box.agent<State>({ name: resolved, context });
+    }
     let proxy = this.agents.get(resolved);
     if (!proxy) {
       proxy = this.box.agent<unknown>({ name: resolved });
@@ -241,6 +288,38 @@ class ChannelImpl<Options> implements Channel<Options> {
 
   agentState(name: string): AgentState {
     return this.config.agentState[name] ?? 'server';
+  }
+
+  async context(request: ContextRequest): Promise<ActionContext> {
+    const name = this.expose.contextProvider;
+    if (!name) return {};
+    const key = `/flow/${contextProviderFlowName(name)}`;
+    // No context on this call: the route sends it to the shared/singleton
+    // box, never a session's.
+    let result: unknown;
+    try {
+      result = await this.flow(contextProviderFlowName(name))(
+        toChannelRequest(request)
+      );
+    } catch (e) {
+      // v2 says "action <key> not found", v1 answers 404 with the same text.
+      if (e instanceof Error && e.message.includes(`${key} not found`)) {
+        throw new Error(
+          `The app has no context provider "${name}" (expose.contextProvider). ` +
+            `Define it with defineContextProvider(ai, { name: '${name}' }, ...) ` +
+            `from genkit-channels/app, or a "${contextProviderFlowName(name)}" ` +
+            `flow in Go/Python. (${e.message})`
+        );
+      }
+      throw e;
+    }
+    if (!isRecord(result)) {
+      throw new Error(
+        `Context provider "${name}" must return an object (the action ` +
+          `context), got ${result === null ? 'null' : typeof result}.`
+      );
+    }
+    return result;
   }
 
   secret(name: string): string {
@@ -306,4 +385,38 @@ class ChannelImpl<Options> implements Channel<Options> {
       this.box.defineFlow({ name });
     }
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isMethod(value: string): value is ChannelRequestMethod {
+  return (CHANNEL_REQUEST_METHODS as readonly string[]).includes(value);
+}
+
+/**
+ * Normalizes what a channel has into the wire shape providers see: a known
+ * method, lowercase header names, and array header values joined with ", "
+ * (as HTTP does).
+ */
+export function toChannelRequest(request: ContextRequest): ChannelRequest {
+  const method = (request.method ?? 'POST').toUpperCase();
+  if (!isMethod(method)) {
+    throw new Error(
+      `Unsupported method "${request.method}" for a context provider ` +
+        `(expected one of ${CHANNEL_REQUEST_METHODS.join(', ')}).`
+    );
+  }
+  const headers: Record<string, string> = {};
+  for (const [name, value] of Object.entries(request.headers ?? {})) {
+    if (value === undefined) continue;
+    headers[name.toLowerCase()] = Array.isArray(value) ? value.join(', ') : value;
+  }
+  return {
+    method,
+    headers,
+    input: request.input,
+    ...(request.channel ? { channel: request.channel } : {}),
+  };
 }

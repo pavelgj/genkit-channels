@@ -106,6 +106,22 @@ function compile() {
   check('remote runner is left as written', !('cmd' in remote.box.runner));
   check('compiled config validates', !!parseChannelConfig(compiled));
 
+  const guarded = buildChannelConfig({
+    deployment: { name: 'x', channel: 'http' },
+    runtime,
+    expose: { agents: ['a'], flows: [], contextProvider: 'auth' },
+    secrets: [],
+    appDir: 'user',
+  });
+  check('expose.contextProvider is compiled in', parseChannelConfig(guarded).expose.contextProvider === 'auth');
+  let emptyName = '';
+  try {
+    parseChannelConfig({ expose: { contextProvider: '' } });
+  } catch (e) {
+    emptyName = e.message;
+  }
+  check('an empty contextProvider is rejected', emptyName.includes('expose.contextProvider'));
+
   // App secrets join an allowlist so they aren't listed twice.
   const narrowed = buildChannelConfig({
     deployment: { name: 'x', channel: 'discord', box: { env: [] } },

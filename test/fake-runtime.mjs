@@ -25,6 +25,8 @@
  * Test hooks:
  *  - `/flow/probe` returns this process's pid, the names of a few env vars it
  *    can see, and how many listActions calls it has served.
+ *  - `/flow/contextProvider/auth` is a context provider (`Bearer ok` passes);
+ *    `/flow/whoami` returns the action context it was called with.
  *  - FAKE_AGENT_STATE=client makes echoAgent client-managed.
  */
 
@@ -128,6 +130,49 @@ ws.on('message', async (data) => {
       method: 'runActionState',
       params: { requestId: msg.id, state: { traceId } },
     });
+
+    // A context provider (what defineContextProvider registers): `Bearer ok`
+    // passes, a missing header is UNAUTHENTICATED (16), anything else is
+    // PERMISSION_DENIED (7). Errors use the wire shape a real runtime sends.
+    if (key === '/flow/contextProvider/auth') {
+      const auth = input?.headers?.authorization;
+      if (auth === 'Bearer ok') {
+        send({
+          jsonrpc: '2.0',
+          result: {
+            result: {
+              auth: { uid: input.channel?.user?.id ?? 'http-user' },
+              providerPid: process.pid,
+              seenRequest: input,
+            },
+            telemetry: { traceId },
+          },
+          id: msg.id,
+        });
+      } else {
+        const [code, status] = auth ? [7, 'PERMISSION_DENIED'] : [16, 'UNAUTHENTICATED'];
+        send({
+          jsonrpc: '2.0',
+          error: {
+            code: -32000,
+            message: `${status}: nope`,
+            data: { code, message: `${status}: nope` },
+          },
+          id: msg.id,
+        });
+      }
+      return;
+    }
+
+    // Returns the action context the call carried.
+    if (key === '/flow/whoami') {
+      send({
+        jsonrpc: '2.0',
+        result: { result: { context: msg.params.context ?? null }, telemetry: { traceId } },
+        id: msg.id,
+      });
+      return;
+    }
 
     if (key === '/flow/probe') {
       const names = Array.isArray(input?.env) ? input.env : [];

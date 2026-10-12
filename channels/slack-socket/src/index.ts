@@ -175,9 +175,17 @@ async function main(): Promise<void> {
       const started = Date.now();
       log(`turn start: thread ${trigger.threadTs}`);
       const res = await runTurn({
-        // One handle per conversation, so `box.route: session` gives each
-        // thread its own box.
-        agent: channel.agent(agentName, { sessionId }),
+        agent: (handle) => channel.agent(agentName, handle),
+        // `{}` unless the deployment sets `expose.contextProvider`.
+        context: () =>
+          channel.context({
+            input,
+            channel: {
+              platform: 'slack',
+              ...(ev.user ? { user: { id: ev.user } } : {}),
+              ...(teamId ? { tenant: teamId } : {}),
+            },
+          }),
         agentState,
         sessionKey: key,
         sessionId,
