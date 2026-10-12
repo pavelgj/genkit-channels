@@ -8,7 +8,7 @@
 # Install the channel first, then run locally:
 #
 #   genkit-channel add ../../channels http
-#   echo 'GEMINI_API_KEY=...' > .env.local
+#   cp .env.example .env.local   # then fill in GEMINI_API_KEY and API_KEY
 #   genkit-channel dev assistant
 #
 deployments:
@@ -26,5 +26,12 @@ deployments:
       agent: assistant
       agentState:
         assistant: client
-    # The model key. Locally from .env.local; on Cloud Run from Secret Manager.
+      # No code to write a provider in, so use a built-in one: callers send
+      # `Authorization: Bearer <key>`. The channel checks it before the app
+      # starts, and the app never sees the keys. List a second secret to
+      # rotate: add API_KEY_NEXT, move callers over, then drop API_KEY.
+      contextProvider:
+        apiKey: { secrets: [API_KEY] }
+    # The model key, for the app. Locally from .env.local; on Cloud Run from
+    # Secret Manager (as is API_KEY above).
     secrets: [GEMINI_API_KEY]

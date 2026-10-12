@@ -91,16 +91,17 @@ for (const ul of userLangs) {
   check(`[sidecar ${ul}] channel image exposes ingress`, chDf.includes('EXPOSE 8080'));
 }
 
-// A Node channel that declares a `build` (e.g. a TypeScript channel) must use
-// that build command in its plan and run its compiled entry, instead of the
-// default `npm install --omit=dev`.
+// A Node channel that declares a `build` (e.g. a TypeScript channel like
+// `http`) must use that build command in its plan and run its compiled entry,
+// instead of the default `npm install --omit=dev`. (The plain-JS path, with
+// no `build`, is covered by fakeChannelDef above.)
 {
   const tsDef = {
-    name: 'http-ts',
+    name: 'http',
     language: 'node',
     entry: 'dist/index.js',
     build: 'npm install && npm run build',
-    dir: '/tmp/http-ts',
+    dir: '/tmp/http',
   };
   const plan = resolveChannelBuildPlan(tsDef);
   check(

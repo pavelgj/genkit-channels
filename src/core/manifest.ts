@@ -30,6 +30,7 @@ import * as YAML from 'yaml';
 import {
   AgentStateSchema,
   BoxConfigSchema,
+  ContextProviderConfigSchema,
   formatZodError,
 } from '../lib/config';
 import { DeploymentSecretsSchema, SecretNameSchema } from './secrets';
@@ -186,7 +187,7 @@ function validateDeployment(
     `${where}.expose.agentState`
   );
   const contextProvider = parseOrThrow(
-    z.string().min(1).optional(),
+    ContextProviderConfigSchema.optional(),
     expose.contextProvider,
     `${where}.expose.contextProvider`
   );

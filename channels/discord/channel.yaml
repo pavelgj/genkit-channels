@@ -36,6 +36,15 @@ recommends:
 # JSONata rules evaluated against the compose context (deployment, expose,
 # config, env, child). A falsy `validate` result fails the deploy; a truthy
 # `warn` result logs a warning.
+validate:
+  # Gateway events carry no Authorization header, so it would refuse everyone.
+  - expr: >-
+      $not($exists(expose.contextProvider.apiKey))
+    message: >-
+      the built-in apiKey context provider needs HTTP headers, which Discord
+      doesn't send; use an app-defined provider (defineContextProvider) that
+      checks the caller (request.channel) instead.
+
 warn:
   # A public endpoint does nothing for a gateway bot and only widens exposure.
   - expr: >-

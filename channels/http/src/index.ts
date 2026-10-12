@@ -15,7 +15,7 @@
  */
 
 /**
- * HTTP channel entry point, written in TypeScript.
+ * HTTP channel entry point.
  *
  * Exposes each flow and agent the deployment lists in `expose` as a POST
  * endpoint:
@@ -67,7 +67,7 @@ async function main(): Promise<void> {
   }
   if (routes.size === 0) {
     console.error(
-      '[channel:http-ts] nothing to expose; list agents/flows under ' +
+      '[channel:http] nothing to expose; list agents/flows under ' +
         '`expose` in channels.yaml.'
     );
     process.exit(1);
@@ -115,14 +115,14 @@ async function main(): Promise<void> {
 
   const port = Number(process.env.PORT) || 8080;
   const httpServer = server.listen(port, () => {
-    console.log(`[channel:http-ts] listening on :${port}`);
+    console.log(`[channel:http] listening on :${port}`);
     for (const [path, r] of routes) {
       console.log(`  POST ${path}  -> ${r.kind} ${r.name}`);
     }
   });
 
   const shutdown = async (signal: NodeJS.Signals) => {
-    console.log(`[channel:http-ts] ${signal} received, shutting down`);
+    console.log(`[channel:http] ${signal} received, shutting down`);
     httpServer.close();
     await channel.close();
     process.exit(0);
@@ -241,6 +241,6 @@ function sendError(res: Response, e: unknown): void {
 }
 
 main().catch((e) => {
-  console.error('[channel:http-ts] fatal', e);
+  console.error('[channel:http] fatal', e);
   process.exit(1);
 });

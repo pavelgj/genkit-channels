@@ -63,6 +63,10 @@ import {
   type ChannelConfigInput,
   type Expose,
 } from './config';
+import {
+  contextProviderSecrets,
+  runBuiltinContextProvider,
+} from './context-providers';
 import { buildBoxOptions, buildRunner } from './runner';
 
 /**
@@ -159,9 +163,11 @@ export interface Channel<Options = Record<string, unknown>> {
    * const agent = channel.agent(name, { sessionId, context });
    * ```
    *
-   * The provider runs on the shared box (`route: session`) or the app's one
-   * box, so a refused caller never starts a session box. Under
-   * `route: request` it costs a box start per call, like everything else.
+   * A built-in provider (`contextProvider: { apiKey: ... }`) runs right here
+   * and never touches the app. An app-defined one runs on the shared box
+   * (`route: session`) or the app's one box, so a refused caller never
+   * starts a session box. Under `route: request` it costs a box start per
+   * call, like everything else.
    */
   context(request: ContextRequest): Promise<ActionContext>;
   /** A proxy for a flow in the app. Sync: the box starts on the first call. */
@@ -227,7 +233,13 @@ class ChannelImpl<Options> implements Channel<Options> {
     // Fail at startup, not on the first message, if a declared secret is
     // missing. The CLI checks this before launching, so this mostly catches
     // hand-run channels.
-    const missing = config.secrets.filter((name) => !process.env[name]);
+    // A built-in provider's keys count too: the CLI lists them in `secrets`,
+    // a hand-written config may not.
+    const required = new Set([
+      ...config.secrets,
+      ...contextProviderSecrets(config.expose.contextProvider),
+    ]);
+    const missing = [...required].filter((name) => !process.env[name]);
     if (missing.length > 0) {
       throw new Error(
         `Missing secrets: ${missing.join(', ')}. Add them to .env.local for ` +
@@ -291,8 +303,13 @@ class ChannelImpl<Options> implements Channel<Options> {
   }
 
   async context(request: ContextRequest): Promise<ActionContext> {
-    const name = this.expose.contextProvider;
-    if (!name) return {};
+    const provider = this.expose.contextProvider;
+    if (provider === undefined) return {};
+    // Built-ins run here, in the channel: no box hop, no app code needed.
+    if (typeof provider !== 'string') {
+      return runBuiltinContextProvider(provider, toChannelRequest(request));
+    }
+    const name = provider;
     const key = `/flow/${contextProviderFlowName(name)}`;
     // No context on this call: the route sends it to the shared/singleton
     // box, never a session's.

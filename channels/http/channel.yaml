@@ -1,11 +1,18 @@
 name: http
 description: Expose a Genkit app's flows and agents over HTTP.
 version: 0.1.0
-# The channel is implemented in Node (the default). Node channels run their
-# copied source directly after an `npm install`; no build step.
+# Runs on Node. Written in TypeScript, so it declares a `build` that compiles
+# it. (A plain-JS channel would leave `build` out and point `entry` at its
+# source; Node channels then just get an `npm install --omit=dev`.)
 language: node
-# Node entry to run (relative to the channel dir). Plain ESM JS.
-entry: src/index.js
+# `entry` points at the compiled output (relative to the channel dir). It does
+# not exist on disk until the build has run.
+entry: dist/index.js
+# Build command run in the channel dir to produce `entry`. When the channel is
+# installed with `genkit-channel add`, this runs after you confirm; it also runs
+# in the container image build. `npm install` (not `--omit=dev`) so the
+# TypeScript compiler in devDependencies is available.
+build: npm install && npm run build
 
 # Non-secret env vars and secrets the channel itself needs: none. The app's
 # secrets are declared on the deployment in channels.yaml.

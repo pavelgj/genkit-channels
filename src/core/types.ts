@@ -26,6 +26,7 @@ import type {
   AgentState,
   BoxConfig,
   ChannelConfigInput,
+  ContextProviderConfig,
   Expose,
 } from '../lib/config';
 import type { DeploymentSecrets, ResolvedSecret } from './secrets';
@@ -133,11 +134,13 @@ export interface ExposeConfig {
    */
   agentState?: Record<string, AgentState>;
   /**
-   * Name of the app's context provider (`defineContextProvider(ai, { name })`
-   * in JS, a `contextProvider/<name>` flow in Go/Python). The channel runs it
-   * on every call to authenticate the caller.
+   * What the channel runs on every call to authenticate the caller:
+   *  - a name: the app's provider (`defineContextProvider(ai, { name })` in
+   *    JS, a `contextProvider/<name>` flow in Go/Python);
+   *  - a built-in, run in the channel (no app code):
+   *    `{ apiKey: { secrets: [API_KEY] } }`.
    */
-  contextProvider?: string;
+  contextProvider?: ContextProviderConfig;
 }
 
 /**

@@ -37,6 +37,14 @@ validate:
       $not($exists(config.stream)) or config.stream in ['native', 'edit']
     message: >-
       with.stream must be "native" or "edit".
+  # Socket Mode events carry no Authorization header, so it would refuse
+  # everyone.
+  - expr: >-
+      $not($exists(expose.contextProvider.apiKey))
+    message: >-
+      the built-in apiKey context provider needs HTTP headers, which Slack
+      doesn't send; use an app-defined provider (defineContextProvider) that
+      checks the caller (request.channel) instead.
 
 warn:
   - expr: >-

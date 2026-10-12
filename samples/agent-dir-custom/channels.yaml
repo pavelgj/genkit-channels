@@ -9,13 +9,13 @@
 #
 # Install the channel, install deps, then run locally:
 #
-#   genkit-channel add ../../channels http-ts
+#   genkit-channel add ../../channels http
 #   npm install
 #   . ~/init-gemini.sh && genkit-channel dev weather
 #
 deployments:
   - name: weather
-    channel: http-ts
+    channel: http
     runtime:
       language: js
       # Our runtime is a single ESM file; no build step needed.

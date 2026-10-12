@@ -18,7 +18,7 @@ Sorted, top to bottom. Details live in the GitHub issues (tracking issue [#41](h
 ## P0
 
 - [x] [#10](https://github.com/genkit-ai/genkit-channels/issues/10) Context providers: `defineContextProvider` shim and `expose.contextProvider`
-- [ ] [#11](https://github.com/genkit-ai/genkit-channels/issues/11) HTTP channel: auth via context providers; merge `http` and `http-ts`
+- [x] [#11](https://github.com/genkit-ai/genkit-channels/issues/11) HTTP channel: auth via context providers; merge `http` and `http-ts`
 - [ ] [#12](https://github.com/genkit-ai/genkit-channels/issues/12) Chat channel basics: split long replies, per-thread queue in Discord, specific errors
 - [ ] [#13](https://github.com/genkit-ai/genkit-channels/issues/13) Durable conversation state for client-managed agents
 - [ ] [#14](https://github.com/genkit-ai/genkit-channels/issues/14) `genkit-channel check`, JSON Schema and spec for `channels.yaml`

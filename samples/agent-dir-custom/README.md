@@ -37,14 +37,14 @@ index.mjs                 the custom runtime (loadAgentDir + a custom tool)
 agents/
   weatherer/
     agent.prompt          references the getWeather tool by name
-channels.yaml             wires the runtime + agent folder to the http-ts channel
+channels.yaml             wires the runtime + agent folder to the http channel
 package.json
 ```
 
 ## Run it
 
 ```bash
-genkit-channel add ../../channels http-ts
+genkit-channel add ../../channels http
 npm install
 . ~/init-gemini.sh && genkit-channel dev weather
 ```

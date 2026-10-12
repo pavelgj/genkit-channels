@@ -42,12 +42,17 @@ export {
   BoxConfigSchema,
   ChannelConfigSchema,
   type AgentState,
+  type ApiKeyProviderConfig,
   type BoxConfig,
+  type BuiltinContextProvider,
   type ChannelConfig,
   type ChannelConfigInput,
+  type ContextProviderConfig,
   type Expose,
   type RunnerConfig,
 } from './lib/config';
+
+export { type BuiltinAuthContext } from './lib/context-providers';
 
 export { errorStatus, httpStatusFor, isAuthError } from './lib/errors';
 

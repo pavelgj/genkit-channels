@@ -120,15 +120,52 @@ export const BoxConfigSchema = z
   .strict();
 export type BoxConfig = z.infer<typeof BoxConfigSchema>;
 
+/** An env var name, which is also the default secret name on the platform. */
+export const SecretNameSchema = z
+  .string()
+  .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, 'expected an env var name like API_KEY');
+
+/**
+ * Built-in `apiKey` provider: the `Authorization` header (with or without
+ * `Bearer `) must equal one of the listed secrets. Several secrets let a key
+ * rotate without downtime: add the new one, move callers, drop the old one.
+ */
+export const ApiKeyProviderConfigSchema = z
+  .object({ secrets: z.array(SecretNameSchema).min(1) })
+  .strict();
+export type ApiKeyProviderConfig = z.infer<typeof ApiKeyProviderConfigSchema>;
+
+/**
+ * Context providers that run in the channel process, configured in YAML. For
+ * apps with no code to put a provider in (agent-dir). Keyed by provider so
+ * more built-ins can be added without changing the shape.
+ */
+export const BuiltinContextProviderSchema = z
+  .object({ apiKey: ApiKeyProviderConfigSchema })
+  .strict();
+export type BuiltinContextProvider = z.infer<
+  typeof BuiltinContextProviderSchema
+>;
+
+/**
+ * `expose.contextProvider`: the name of a provider the app defines
+ * (`defineContextProvider`), or a built-in one configured inline.
+ */
+export const ContextProviderConfigSchema = z.union([
+  z.string().min(1),
+  BuiltinContextProviderSchema,
+]);
+export type ContextProviderConfig = z.infer<typeof ContextProviderConfigSchema>;
+
 /** What a deployment exposes through the channel, resolved. */
 export const ExposeSchema = z.object({
   agents: z.array(z.string()).default([]),
   flows: z.array(z.string()).default([]),
   /**
-   * Name of the app's context provider (`defineContextProvider`). The channel
-   * runs it per call (`channel.context()`) to get auth and caller identity.
+   * The context provider the channel runs per call (`channel.context()`) to
+   * get auth and caller identity: an app-defined one by name, or a built-in.
    */
-  contextProvider: z.string().min(1).optional(),
+  contextProvider: ContextProviderConfigSchema.optional(),
 });
 export type Expose = z.output<typeof ExposeSchema>;
 

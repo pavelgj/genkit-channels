@@ -13,7 +13,8 @@ agents/
     agent.prompt          the agent's prompt (model, config, use: middleware)
     skills/
       pirate/SKILL.md     a skill, auto-wired into the skills middleware
-channels.yaml             wires the agent folder to the http-ts channel
+channels.yaml             wires the agent folder to the http channel
+.env.example              the secrets to put in .env.local
 ```
 
 The agent folder name (`assistant`) becomes the agent name, addressable at
@@ -29,23 +30,57 @@ Models "just work" once an API key is set. Google AI (Gemini) needs
 # Install the HTTP channel into this project.
 genkit-channel add ../../channels http
 
-# Run locally (no container). Loads the API key from your shell.
-. ~/init-gemini.sh && genkit-channel dev assistant
+# Secrets: the model key, and the key callers must present.
+cp .env.example .env.local   # fill in GEMINI_API_KEY and API_KEY
+
+# Run locally (no container).
+genkit-channel dev assistant
 ```
 
 Then, in another terminal:
 
 ```bash
+KEY=...   # the API_KEY from .env.local
+
 # Non-streaming turn.
 curl -s localhost:8080/assistant \
+  -H "authorization: Bearer $KEY" \
   -H 'content-type: application/json' \
   -d '{"message":"hello!"}'
 
 # Ask it to use the pirate skill.
 curl -s localhost:8080/assistant \
+  -H "authorization: Bearer $KEY" \
   -H 'content-type: application/json' \
   -d '{"message":"talk like a pirate"}'
+
+# No key: 401. Wrong key: 403.
+curl -s -w ' [%{http_code}]\n' localhost:8080/assistant \
+  -H 'content-type: application/json' -d '{"message":"hi"}'
 ```
+
+## Auth without code
+
+There's no app code to put a context provider in, so the deployment uses the
+built-in `apiKey` provider:
+
+```yaml
+expose:
+  agent: assistant
+  contextProvider:
+    apiKey: { secrets: [API_KEY] }
+```
+
+The channel checks the `Authorization` header (with or without `Bearer `)
+before the app starts, so a refused caller costs nothing, and the key never
+reaches the app. To rotate, list both keys, move callers to the new one, then
+drop the old one:
+
+```yaml
+    apiKey: { secrets: [API_KEY, API_KEY_NEXT] }
+```
+
+On Cloud Run the keys come from Secret Manager like any other secret.
 
 ## Customizing
 

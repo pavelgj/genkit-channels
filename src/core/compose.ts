@@ -51,6 +51,7 @@ import {
   type ChannelConfigInput,
   type Expose,
 } from '../lib/config';
+import { contextProviderSecrets } from '../lib/context-providers';
 import { buildChannelConfig } from './channel-config';
 import { resolveSecrets, secretLikeNames } from './secrets';
 import type {
@@ -108,7 +109,13 @@ export async function compose(
   );
   const secrets = resolveSecrets({
     channelName: channel.name,
-    channelSecrets: channel.secrets ?? [],
+    // A built-in context provider's keys are checked in the channel, so they
+    // are channel secrets: kept out of the app, still renameable through the
+    // deployment's `secrets` map.
+    channelSecrets: [
+      ...(channel.secrets ?? []),
+      ...contextProviderSecrets(deployment.expose?.contextProvider),
+    ],
     deploymentSecrets: deployment.secrets,
   });
   const plainSecrets = secretLikeNames(deployment.env ?? []);

@@ -286,6 +286,28 @@ Go and Python apps: define a flow named `contextProvider/<name>` that takes a
 
 See `samples/http-auth/` for an agent and a flow behind API keys.
 
+### Built-in providers (no app code)
+
+Apps with nowhere to put a provider (agent-dir) can use a built-in one,
+configured in YAML and run in the channel:
+
+```yaml
+    expose:
+      agent: assistant
+      contextProvider:
+        apiKey: { secrets: [API_KEY, API_KEY_NEXT] }
+```
+
+`apiKey` accepts the `Authorization` header (with or without `Bearer `) when it
+matches any listed secret, so a key can rotate without downtime. Tools see
+`context.auth` as `{ provider: 'apiKey', keyName: 'API_KEY' }`, never the key.
+The secrets are the channel's: they are checked at startup, kept out of the
+app's box, and come from `.env.local` or Secret Manager like any other. A
+refused caller never starts the app. Chat channels (Slack, Discord) send no
+headers and reject this provider at deploy time.
+
+See `samples/agent-dir-basic/`.
+
 ## Writing a channel
 
 
@@ -361,7 +383,7 @@ A few more things are available when you need them:
 - `initChannel({ config, runner })` takes the config inline or a custom
   `BoxRunner`, which is handy for tests.
 
-See `channels/http-ts/` (flows and agents over HTTP), `channels/slack-socket/`
+See `channels/http/` (flows and agents over HTTP), `channels/slack-socket/`
 (a Slack bot, with its pure logic split out for tests) and `channels/discord/`
 (one agent as a bot) for complete examples.
 
@@ -398,8 +420,7 @@ reflection on loopback, and the channel reaches it with a `remote` runner.
 genkit-channels/
   src/                      CLI + initChannel helper library
   channels/
-    http/                   the bundled Node HTTP channel (plain JS)
-    http-ts/                the same, in TypeScript
+    http/                   flows and agents over HTTP
     discord/                one agent as a Discord gateway bot
     slack-socket/           one agent as a Slack bot (Socket Mode)
   samples/

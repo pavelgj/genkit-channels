@@ -34,11 +34,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { parseEnv } from 'node:util';
 import { z } from 'genkit';
+import { SecretNameSchema } from '../lib/config';
 
-/** An env var name, which is also the default secret name on the platform. */
-export const SecretNameSchema = z
-  .string()
-  .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, 'expected an env var name like API_KEY');
+// Lives in the library (channel.config.json uses it too); re-exported here
+// for the CLI side.
+export { SecretNameSchema };
 
 /**
  * A deployment's `secrets`: a list of names, or a map from name to a
